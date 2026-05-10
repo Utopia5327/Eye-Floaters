@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Floaters</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<style>
+  :root {
+    --serif: "Iowan Old Style", "Palatino Linotype", "Palatino", "Georgia", serif;
+    --ink:       #1a1108;
+    --ink-mid:   rgba(26, 17, 8, 0.66);
+    --ink-faint: rgba(26, 17, 8, 0.36);
+    --paper:     #efe7d7;
+  }
+
+  html, body {
+    margin: 0; padding: 0; overflow: hidden;
+    background: var(--paper);
+    font-family: var(--serif);
+    font-size: 17px;
+    line-height: 1.65;
+    color: var(--ink);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* type primitives */
+  .t-display { font-style: italic; font-weight: 400; font-size: clamp(60px, 9.5vw, 96px); line-height: 1; letter-spacing: -0.005em; color: var(--ink); }
+  .t-body    { font-style: normal; font-weight: 400; font-size: 17px; line-height: 1.65; color: var(--ink-mid); }
+  .t-caption { font-style: italic; font-weight: 400; font-size: 13px; line-height: 1.5; color: var(--ink-mid); }
+
+  /* link primitive — italic, underline on hover only */
+  .link {
+    background: none; border: none; padding: 0;
+    font: inherit; color: var(--ink-mid);
+    font-style: italic;
+    cursor: pointer;
+    border-bottom: 1px solid transparent;
+    transition: color 0.3s, border-color 0.3s;
+  }
+  .link:hover { color: var(--ink); border-bottom-color: var(--ink-faint); }
+
+  /* CTA: same family, slightly larger, always-visible underline. not a button. */
+  .cta-link {
+    background: none; border: none;
+    font: inherit;
+    font-style: italic;
+    font-size: 20px;
+    color: var(--ink);
+    cursor: pointer;
+    padding: 4px 2px;
+    border-bottom: 1px solid var(--ink-faint);
+    transition: border-color 0.4s, transform 0.4s;
+  }
+  .cta-link:hover {
+    border-bottom-color: var(--ink);
+    transform: translateY(-1px);
+  }
+
+  /* chip: frosted-paper background so floating controls stay legible
+     against any panorama (white walls, mountains, sky) without being loud. */
+  .chip {
+    background: rgba(239, 231, 215, 0.72);
+    -webkit-backdrop-filter: blur(8px);
+    backdrop-filter: blur(8px);
+    padding: 7px 14px;
+    border-radius: 999px;
+    border: 1px solid rgba(26, 17, 8, 0.06);
+    color: var(--ink-mid);
+    font-style: italic;
+    font-size: 13px;
+    cursor: pointer;
+    transition: color 0.3s, background 0.3s, border-color 0.3s;
+  }
+  .chip:hover {
+    color: var(--ink);
+    background: rgba(239, 231, 215, 0.92);
+    border-color: rgba(26, 17, 8, 0.12);
+  }
+
+  /* canvas + camera */
+  #scene { display: block; position: fixed; inset: 0; width: 100vw; height: 100vh; }
+  #cam   { position: fixed; bottom: 14px; right: 14px; width: 110px; height: 82px;
+           opacity: 0.14; transform: scaleX(-1); border-radius: 3px; pointer-events: none; }
+
+  /* status: chip-styled, lives bottom-left */
+  #status {
+    position: fixed; bottom: 22px; left: 24px; z-index: 50;
+    font-style: italic; font-size: 13px; color: var(--ink-mid);
+    background: rgba(239, 231, 215, 0.72);
+    -webkit-backdrop-filter: blur(8px);
+    backdrop-filter: blur(8px);
+    padding: 6px 12px;
+    border-radius: 999px;
+    border: 1px solid rgba(26, 17, 8, 0.06);
+    opacity: 0;
+    transition: opacity 0.6s;
+  }
+  #status.shown { opacity: 1; }
+
+  /* ── entry: doorway over the running experience ───────────────────────────── */
+  #entry {
+    position: fixed; inset: 0; z-index: 100;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(239, 231, 215, 0.78);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    transition: opacity 1.4s ease, backdrop-filter 1.4s ease;
+  }
+  #entry.gone {
+    opacity: 0;
+    pointer-events: none;
+    backdrop-filter: blur(0px);
+    -webkit-backdrop-filter: blur(0px);
+  }
+
+  .entry-card {
+    text-align: center;
+    max-width: 30rem;
+    padding: 0 1.5rem;
+  }
+  .entry-card h1 { margin: 0 0 1.6rem 0; }
+  .entry-card .lede { margin: 0 auto 2.6rem auto; max-width: 24rem; }
+
+  .entry-foot {
+    position: absolute;
+    bottom: 28px; left: 0; right: 0;
+    text-align: center;
+  }
+
+  /* ── nav (top-right, standard nav location) ───────────────────────────────── */
+  #nav {
+    position: fixed;
+    top: 22px; right: 24px;
+    z-index: 60;
+    display: flex; gap: 10px;
+    opacity: 0;
+    transition: opacity 0.8s;
+  }
+  #nav.shown { opacity: 1; }
+
+  /* ── about panel ──────────────────────────────────────────────────────────── */
+  #about-panel {
+    position: fixed; inset: 0; z-index: 110;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(239, 231, 215, 0.97);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.5s ease;
+  }
+  #about-panel.open { opacity: 1; pointer-events: auto; }
+
+  .about-card {
+    max-width: 34rem;
+    padding: 2.5rem 2rem 3rem;
+  }
+  .about-card p { margin: 0 0 1.5rem 0; }
+  .about-card .lead {
+    font-style: italic;
+    font-size: 19px;
+    line-height: 1.55;
+    color: var(--ink);
+    margin: 0 0 2rem 0;
+  }
+  .about-card em { color: var(--ink); font-style: italic; }
+  .about-card .rule {
+    width: 28px; height: 1px;
+    background: var(--ink-faint);
+    margin: 2rem 0;
+    border: 0;
+  }
+  .about-card .signature {
+    margin-top: 2rem;
+    color: var(--ink-faint);
+  }
+
+  .about-close {
+    position: fixed;
+    top: 22px; right: 24px;
+  }
+</style>
+</head>
+<body>
+  <canvas id="scene"></canvas>
+  <video id="cam" autoplay playsinline muted></video>
+  <div id="status"></div>
+
+  <nav id="nav">
+    <button id="home-link" class="chip" type="button">home</button>
+    <button id="about-link" class="chip" type="button">about</button>
+  </nav>
+
+  <div id="entry">
+    <div class="entry-card">
+      <h1 class="t-display">Floaters</h1>
+      <p class="lede t-body">The cobwebs drifting in your eyes you've stopped paying attention to.</p>
+      <button id="enterBtn" class="cta-link" type="button">begin</button>
+    </div>
+    <div class="entry-foot">
+      <button id="aboutEntryBtn" class="link t-caption" type="button">about</button>
+    </div>
+  </div>
+
+  <div id="about-panel" role="dialog" aria-label="About">
+    <button class="about-close link t-caption" id="closeAboutBtn" type="button">close</button>
+    <div class="about-card">
+      <p class="lead">There are little shapes drifting in your eyes — cobwebs, fibers, faint specks. You've had them since you were a kid. You probably stopped seeing them.</p>
+
+      <p class="t-body">One morning I noticed mine again. So I put them on a screen.</p>
+
+      <hr class="rule">
+
+      <p class="t-body">They're tiny fragments suspended in the gel that fills the eye, casting soft shadows on the retina. They lag and overshoot as you look around. A blink reshuffles them. They accumulate over a lifetime — a quiet clock.</p>
+
+      <hr class="rule">
+
+      <p class="t-body">I knew what I'd been watching. Claude wrote the math — eye tracking, fluid physics, the right damping for the floaters to feel real. The piece is the translation between the two.</p>
+
+      <p class="signature t-caption">— Manas Bhatia, 2026</p>
+    </div>
+  </div>
+
+  <script type="module" src="./main.js"></script>
+</body>
+</html>
