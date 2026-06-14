@@ -92,25 +92,30 @@ const clamp255 = v => v < 0 ? 0 : v > 255 ? 255 : v;
 const lerp = (a, b, t) => a + (b - a) * t;
 const lerpRGB = (a, b, t) => [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)];
 
-const paperTex = makePaperTexture(512);
 const grainTex = makeGrain(256);
-let paperPattern = null, grainPattern = null;
+let grainPattern = null;
 
-// ── background image (the world the floaters are seen against) ────────────────
-// loaded asynchronously; until ready, we fall back to the warm wash. the image
-// is panned based on gaze direction so head/eye motion shifts the world
-// *opposite* (correct physics — world is fixed, eye rotated). floaters move
-// *with* gaze. that contrast is the embodied feel.
-let bgImage = null;
-let bgImageReady = false;
-const BG_CANDIDATES = ['background.jpg', 'background.jpeg', 'background.png', 'background.webp'];
-(function tryLoadBg(idx = 0) {
-  if (idx >= BG_CANDIDATES.length) return; // none found, stay on wash
+// ── sky scenes — one per blink-teleport ──────────────────────────────────────
+// Each scene maps to one of the 5 background photos. filter + tint grade the
+// photo at render time; sky/ground arrays are the procedural fallback if the
+// photo hasn't loaded yet.
+const SKY_SCENES = [
+  { label:'bg1', photo:'background.jpg',  sky:['#0a3d6b','#1a6fb5','#4aaade','#b8dff5'], ground:['#4a7c28','#2d5518'], horizonY:0.62 },
+  { label:'bg2', photo:'background2.jpg', sky:['#0d0520','#3a0d40','#d44020','#f08830'], ground:['#1a0c05','#0a0604'], horizonY:0.55 },
+  { label:'bg3', photo:'background3.jpg', sky:['#010308','#050e1f','#0a1a35','#0d2040'], ground:['#080606','#050303'], horizonY:0.65 },
+  { label:'bg4', photo:'background4.jpg', sky:['#1a1f1a','#2a3528','#4a5540','#606a55'], ground:['#1a1505','#0e0e0a'], horizonY:0.58 },
+];
+let currentScene  = 0;
+let pendingScene  = -1; // scene queued to swap at eyelid peak
+let sceneFlashT   = -1;
+const SCENE_FLASH_DURATION = 0.4;
+
+// ── background photos — one per scene, loaded in parallel ─────────────────────
+const bgImages = SKY_SCENES.map(scene => {
   const img = new Image();
-  img.onload = () => { bgImage = img; bgImageReady = true; };
-  img.onerror = () => tryLoadBg(idx + 1);
-  img.src = BG_CANDIDATES[idx];
-})();
+  img.src = scene.photo;
+  return img;
+});
 
 // ── blink state ───────────────────────────────────────────────────────────────
 // A blink redistributes the vitreous, so real floaters resettle on each blink.
@@ -123,63 +128,168 @@ const BG_CANDIDATES = ['background.jpg', 'background.jpeg', 'background.png', 'b
 let blinkActive = false;     // current physical eye state
 let rawBlink = 0;            // raw blendshape value
 let blinkAnimT = -1;         // -1 = idle; otherwise seconds since blink fired
-const BLINK_FIRE_THRESHOLD    = 0.55;
-const BLINK_RELEASE_THRESHOLD = 0.32;
-const BLINK_DURATION          = 0.22; // total close-and-open arc, seconds (real ≈150-200ms)
+let blinkCoverage = 0;       // 0 = open, 1 = peak closed; drives eye-monitor closure
+let blinkFlashT  = -1;       // white shutter flash for reel legibility
+const BLINK_FIRE_THRESHOLD    = 0.36;  // lower = catches soft/fast blinks
+const BLINK_RELEASE_THRESHOLD = 0.16;
+const BLINK_DURATION          = 0.13; // 130ms — snappy; real blink ≈100-150ms
 
 function triggerBlink() {
-  blinkAnimT = 0;
+  blinkAnimT  = 0;   // drives eye-monitor closure animation
+  blinkFlashT = 0;   // shutter flash
   for (const f of floaters) {
-    // depth-scaled fluid slosh
     const k = 1.4 * f.depth;
     f.dispVel.x += (Math.random() - 0.5) * k;
     f.dispVel.y += (Math.random() - 0.5) * k;
-    // jitter the trajectory phase so the resting positions also reshuffle a bit
-    f.phase.x += (Math.random() - 0.5) * 0.45;
-    f.phase.y += (Math.random() - 0.5) * 0.45;
+    f.phase.x   += (Math.random() - 0.5) * 0.45;
+    f.phase.y   += (Math.random() - 0.5) * 0.45;
+  }
+  audio.blink();
+  if (SKY_SCENES.length > 1) {
+    let next = currentScene;
+    while (next === currentScene) next = Math.floor(Math.random() * SKY_SCENES.length);
+    currentScene = next;
   }
 }
 
-// draws the upper and lower eyelids closing over the screen with a curved
-// inner edge. coverage=0 ⇒ retracted (off-screen); coverage=1 ⇒ fully shut.
-// the curve is a quadratic bezier with the control point dipping past the
-// straight edge — gives the natural eyelid shape (deeper at center, shallower
-// at the corners) without resorting to anatomical drawing.
-function drawEyelids(coverage) {
-  if (coverage <= 0.005) return;
-  // calibrated so at coverage=1 the lids overlap fully at center *and* sides:
-  // side reaches 55% of H, center reaches ~65% of H (since cp = 78%, midpoint of
-  // bezier = (55 + 78) / 2 = 66.5%). top + bottom mirrored ⇒ full closure.
-  const sideY = coverage * 0.55 * H;
-  const cpY   = coverage * 0.78 * H;
+// ── sound design ─────────────────────────────────────────────────────────────
+// three layers, all generated procedurally (no audio files):
+//   • drone: three detuned sines at a fundamental + 5th + octave, passed
+//     through a slowly-modulated low-pass filter. the breath of the piece.
+//   • saccade tone: each fast eye movement triggers a soft bell-like sine on
+//     a pitch picked from a pentatonic-ish scale. the rhythm of looking
+//     becomes the rhythm of the music.
+//   • blink pulse: each blink fires a low warm tone — a quiet body sound.
+// audio context can only be created on a user gesture, so we initialize it
+// inside startExperience(). a master gain fades in over ~1.5s so sound
+// emerges with the experience rather than punching in.
 
-  ctx.save();
-  ctx.globalCompositeOperation = 'source-over';
-  ctx.globalAlpha = 1;
-  ctx.shadowColor = 'rgba(10,6,3,0.55)';
-  ctx.shadowBlur = 14;
-  ctx.fillStyle = 'rgba(10,6,3,0.97)'; // warm near-black — skin/blood-adjacent, not screen-black
+class FloaterAudio {
+  constructor() {
+    this.ctx = null;
+    this.master = null;
+    this.muted = false;
+    this.lastSaccadeTime = 0;
+    this.targetGain = 0.32;
+  }
 
-  // upper eyelid
-  ctx.beginPath();
-  ctx.moveTo(-60, -60);
-  ctx.lineTo(W + 60, -60);
-  ctx.lineTo(W + 60, sideY);
-  ctx.quadraticCurveTo(W * 0.5, cpY, -60, sideY);
-  ctx.closePath();
-  ctx.fill();
+  async start() {
+    if (this.ctx) return;
+    try {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) {
+        showError('audio: no Web Audio API support');
+        return;
+      }
+      this.ctx = new Ctx();
+      // always try to resume — some browsers create as suspended even after
+      // a user gesture, and resume is idempotent if already running
+      try { await this.ctx.resume(); } catch (_) {}
 
-  // lower eyelid (mirrored)
-  ctx.beginPath();
-  ctx.moveTo(-60, H + 60);
-  ctx.lineTo(W + 60, H + 60);
-  ctx.lineTo(W + 60, H - sideY);
-  ctx.quadraticCurveTo(W * 0.5, H - cpY, -60, H - sideY);
-  ctx.closePath();
-  ctx.fill();
+      this.master = this.ctx.createGain();
+      this.master.gain.value = 0;
+      this.master.connect(this.ctx.destination);
+      // quick fade-in so sound is clearly audible within ~0.5s of clicking begin
+      this.master.gain.setTargetAtTime(this.muted ? 0 : this.targetGain,
+                                       this.ctx.currentTime, 0.4);
 
-  ctx.restore();
+      // drone — detuned triad in a register laptop speakers actually reproduce.
+      // root + perfect fifth + octave, each oscillator getting equal weight.
+      const droneOut = this.ctx.createGain();
+      droneOut.gain.value = 0.32;
+
+      const filter = this.ctx.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.value = 1200;
+      filter.Q.value = 0.7;
+
+      droneOut.connect(filter);
+      filter.connect(this.master);
+
+      for (const f of [220, 330.4, 440.8]) {
+        const o = this.ctx.createOscillator();
+        o.type = 'sine';
+        o.frequency.value = f;
+        const g = this.ctx.createGain();
+        g.gain.value = 0.33;
+        o.connect(g);
+        g.connect(droneOut);
+        o.start();
+      }
+
+      // slow LFO on filter cutoff — drone breath
+      const lfo = this.ctx.createOscillator();
+      lfo.type = 'sine';
+      lfo.frequency.value = 0.045; // ~22 second period
+      const lfoGain = this.ctx.createGain();
+      lfoGain.gain.value = 350;
+      lfo.connect(lfoGain);
+      lfoGain.connect(filter.frequency);
+      lfo.start();
+    } catch (e) {
+      showError('audio failed to start: ' + (e && e.message || e));
+      this.ctx = null;
+    }
+  }
+
+  saccade(velocity) {
+    if (!this.ctx || !this.master || this.muted) return;
+    const now = this.ctx.currentTime;
+    if (now - this.lastSaccadeTime < 0.18) return; // throttle
+    this.lastSaccadeTime = now;
+
+    // pentatonic palette an octave higher than before — squarely in the range
+    // laptop speakers handle well
+    const pitches = [440, 554, 659, 740, 880, 988, 1109];
+    const pitch = pitches[Math.floor(Math.random() * pitches.length)];
+
+    const o = this.ctx.createOscillator();
+    o.type = 'sine';
+    o.frequency.value = pitch;
+
+    const g = this.ctx.createGain();
+    const peak = Math.min(0.12, velocity * 0.018);
+    g.gain.setValueAtTime(0, now);
+    g.gain.linearRampToValueAtTime(peak, now + 0.025);
+    g.gain.exponentialRampToValueAtTime(0.0001, now + 1.1);
+
+    o.connect(g);
+    g.connect(this.master);
+    o.start(now);
+    o.stop(now + 1.1);
+  }
+
+  blink() {
+    if (!this.ctx || !this.master || this.muted) return;
+    const now = this.ctx.currentTime;
+    const o = this.ctx.createOscillator();
+    o.type = 'sine';
+    o.frequency.value = 146.8; // D3 — warm but audible on laptop speakers
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0, now);
+    g.gain.linearRampToValueAtTime(0.10, now + 0.04);
+    g.gain.exponentialRampToValueAtTime(0.0001, now + 0.55);
+    o.connect(g);
+    g.connect(this.master);
+    o.start(now);
+    o.stop(now + 0.55);
+  }
+
+  toggleMute() {
+    this.muted = !this.muted;
+    if (this.ctx && this.master) {
+      this.master.gain.setTargetAtTime(this.muted ? 0 : this.targetGain,
+                                       this.ctx.currentTime, 0.3);
+    }
+    return this.muted;
+  }
 }
+
+const audio = new FloaterAudio();
+let saccadeFired = false;
+const SACCADE_AUDIO_TRIGGER = 2.4; // gaze-speed at which a saccade tone fires
+const SACCADE_AUDIO_RESET   = 1.0; // drop below this to re-arm
+
 
 // ── floater physics ───────────────────────────────────────────────────────────
 //
@@ -204,24 +314,36 @@ function drawEyelids(coverage) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const FLOATER_COUNTS = {
-  string: 9,    // wispy cobwebs
-  cell:   34,   // small dark dots / cells
-  ring:    3,   // Weiss-ring style translucent loops
+  strand: 10, // long sinuous threads — the dominant real floater type
+  knot:   5,  // tangled knotted clusters — where strands curl on themselves
 };
 
 // gaze coupling — applied EVERY frame, not gated. as the eye rotates the
 // floater (suspended in fluid) momentarily stays in place, which shows up on
-// the retina as motion *opposite* to eye direction. the magnitude is large so
-// fast eye movements actually carry floaters across the field.
-const GAZE_DRAG        = 4.5;   // velocity coupling — floater_dispVel -= eye_vel × depth × this
-const GAZE_DRAG_MAX    = 14.0;  // cap to prevent insane noise spikes
-// soft spring that pulls the displacement back to the floater's home over
-// ~2-3 seconds. low stiffness + sub-critical damping = visible decay with
-// a slight overshoot/settle.
-const RESTORE_K        = 2.4;   // critical damping would be 2*√k ≈ 3.10
-const RESTORE_D        = 0.95;
-const BUOYANT_DRIFT    = 0.012; // very slow downward drift of the trajectory center
-const TRAJ_SPEED       = 0.07;  // base speed of the slow trajectory wandering
+// the retina as motion *opposite* to eye direction. cranked high so fast eye
+// movements really do whip floaters across the field, the way real ones do.
+const GAZE_DRAG        = 28.0;  // velocity coupling — floater_dispVel += eye_vel × depth × this
+const GAZE_DRAG_MAX    = 95.0;  // per-frame cap — high enough for a real saccade rush, low enough to prevent runaway
+// loose spring back to home — low stiffness + low damping means a saccade-
+// induced excursion oscillates for a couple seconds before settling, so
+// floaters are *always* moving, never landing on a stable point.
+const RESTORE_K        = 1.1;   // softer spring — floaters drift longer before settling
+const RESTORE_D        = 0.32;  // lower damping — post-saccade coast is more visible
+const TRAJ_SPEED        = 0.34;  // slightly faster autonomous wandering when eyes are still
+const LOOK_UP_THRESHOLD = 0.06;  // gaze.y must be below −this to count as "looking up"
+const LIFT_FORCE        = 0.30;  // upward force when viewer looks up
+
+// fixation slip — the conceptual core of the piece. real floaters slip away
+// when you try to look at one, because the eye moves toward the floater and
+// the floater moves with the eye (it's suspended in vitreous fluid), so the
+// fovea never catches up. modeled here as a repulsive force centered on the
+// gaze point, active only when gaze is relatively still. floaters very near
+// the fovea push outward with a quadratic falloff; outside the fovea radius
+// they're unaffected. during saccades (high gazeVel) the slip turns off so
+// you can see floaters streak across the field unimpeded.
+const FIXATION_VEL_THRESHOLD = 4.5;  // lenient — tracker noise won't block fixation detection
+const FOVEA_RADIUS           = 0.50; // half of visual-field half-width — a wide 'look at me' zone
+const REPULSION_FORCE        = 90.0; // strong enough to visibly dart the floater away
 
 const rand  = (a, b) => a + Math.random() * (b - a);
 const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
@@ -232,11 +354,14 @@ class Floater {
     this.depth = depth; // 0 = far (sharp, small, subtle), 1 = close (big, blurry, reactive)
 
     // each floater wanders along its OWN slow trajectory — different center,
-    // different amplitude, different frequency, different phase. This is what
-    // makes the field feel populated rather than monolithic.
-    this.center = { x: rand(-0.85, 0.85), y: rand(-0.85, 0.85) };
-    this.amp    = { x: rand(0.10, 0.32),  y: rand(0.08, 0.26) };
-    this.freq   = { x: rand(0.6, 1.5),    y: rand(0.5, 1.3) };
+    // different amplitude, different frequency, different phase. amplitudes
+    // are large so each floater traverses a real region of the field over
+    // time, never settling at a single point.
+    this.center = { x: rand(-0.7, 0.7),  y: rand(-1.0, 0.0) }; // start in sky
+    // tiny Lissajous — just enough for organic breathing motion.
+    // large amplitudes used to swamp the gravity signal, making falling invisible.
+    this.amp    = { x: rand(0.07, 0.18), y: rand(0.02, 0.07) }; // wider x for lateral wander
+    this.freq   = { x: rand(0.5, 1.4),   y: rand(0.4, 1.2) };
     this.phase  = { x: rand(0, Math.PI * 2), y: rand(0, Math.PI * 2) };
 
     // displacement from trajectory caused by saccadic disturbance. relaxes
@@ -245,34 +370,52 @@ class Floater {
     this.dispVel = { x: 0, y: 0 };
     this.pos     = { x: this.center.x, y: this.center.y };
 
-    // depth-scaled visual properties
-    const dscale = 0.5 + depth * 1.1;
-    if (type === 'string') {
-      const length = rand(70, 180) * dscale;
-      this.opacity = rand(0.05, 0.13) * (0.55 + depth * 0.7);
-      this.blur    = 4 + depth * 9;
-      this.lineW   = 0.7 + depth * 1.5;
-      const segs   = 7 + Math.floor(Math.random() * 5);
-      this.path = [];
-      let a = rand(0, Math.PI * 2), r = 0;
-      for (let i = 0; i < segs; i++) {
-        a += rand(-0.9, 0.9);
-        r += rand(length * 0.10, length * 0.22);
-        this.path.push({ x: Math.cos(a) * r, y: Math.sin(a) * r, w: rand(0.4, 1.3) });
+    // gravity — mostly downward but with an erratic horizontal bias per floater
+    this.vel     = { x: (Math.random() - 0.5) * 0.04, y: 0 };
+    this.gravX   = (Math.random() - 0.5) * 0.08;
+    this.gravStr = 0.020 + depth * 0.035;  // 0.020 (far) → 0.055 (near)
+
+    // All floaters are paths — arrays of {x,y} in local space.
+    // Generated as polylines with many short segments so the shapes are
+    // genuinely wiggly and organic, not smooth or geometric.
+    const dscale = 0.6 + depth * 1.2;
+
+    if (type === 'strand') {
+      const numSegs  = 14 + Math.floor(Math.random() * 10); // 14–23 segments (fewer = faster)
+      const totalLen = rand(160, 400) * dscale;
+      const segLen   = totalLen / numSegs;
+      this.opacity = rand(0.30, 0.54);
+      this.blur    = 1.5 + depth * 4.0;
+      this.lineW   = 7 + depth * 16;
+      let a = rand(0, Math.PI * 2);
+      let x = 0, y = 0;
+      this.path = [{ x, y }];
+      for (let i = 0; i < numSegs; i++) {
+        a += rand(-0.28, 0.28) + Math.sin(i * 0.4 + this.phase.x) * 0.08;
+        x += Math.cos(a) * segLen;
+        y += Math.sin(a) * segLen;
+        this.path.push({ x, y });
       }
-    } else if (type === 'cell') {
-      this.size    = rand(1.2, 4.5) * dscale;
-      this.opacity = rand(0.14, 0.30) * (0.5 + depth * 0.7);
-      this.blur    = 1 + depth * 6;
-    } else { // ring
-      this.size    = rand(16, 38) * dscale;
-      this.opacity = rand(0.14, 0.26) * (0.55 + depth * 0.6);
-      this.blur    = 3 + depth * 8;
-      this.lineW   = 0.6 + depth * 1.2;
+
+    } else { // knot
+      const numSegs = 10 + Math.floor(Math.random() * 7); // 10–16 segments (was 18–29)
+      const segLen  = rand(12, 30) * dscale;
+      this.opacity = rand(0.24, 0.44);
+      this.blur    = 1.5 + depth * 4.5;
+      this.lineW   = 8 + depth * 14;
+      let a = rand(0, Math.PI * 2);
+      let x = 0, y = 0;
+      this.path = [{ x, y }];
+      for (let i = 0; i < numSegs; i++) {
+        a += rand(-0.82, 0.82);
+        x += Math.cos(a) * segLen * rand(0.5, 1.4);
+        y += Math.sin(a) * segLen * rand(0.5, 1.4);
+        this.path.push({ x, y });
+      }
     }
   }
 
-  step(dt, gazeVel) {
+  step(dt, gaze, gazeVel) {
     // independent slow trajectory in visual-field space
     const t = performance.now() * 0.001 * TRAJ_SPEED;
     const trajX = this.center.x + Math.sin(t * this.freq.x + this.phase.x) * this.amp.x;
@@ -284,10 +427,32 @@ class Floater {
     // floaters sweep further, far ones barely budge. this is what makes fast
     // eye movements visibly carry floaters across the field.
     const drag = GAZE_DRAG * this.depth;
-    const dvx = clamp(-gazeVel.x * drag, -GAZE_DRAG_MAX, GAZE_DRAG_MAX);
-    const dvy = clamp(-gazeVel.y * drag, -GAZE_DRAG_MAX, GAZE_DRAG_MAX);
+    // positive coupling: floaters sweep WITH eye direction (intuitive for gallery visitors)
+    const dvx = clamp(gazeVel.x * drag, -GAZE_DRAG_MAX, GAZE_DRAG_MAX);
+    const dvy = clamp(gazeVel.y * drag, -GAZE_DRAG_MAX, GAZE_DRAG_MAX);
     this.dispVel.x += dvx * dt;
     this.dispVel.y += dvy * dt;
+
+    // fixation slip — when the eye tries to fixate near a floater, the floater
+    // slides away. only active when gaze is relatively still (saccades pass
+    // through unimpeded). the closer the floater is to the fovea center, the
+    // harder it pushes outward — quadratic falloff so the effect is sharp at
+    // the center and fades to nothing at the fovea's edge.
+    const gazeSpeed = Math.hypot(gazeVel.x, gazeVel.y);
+    if (gazeSpeed < FIXATION_VEL_THRESHOLD) {
+      const fixationStrength = 1 - gazeSpeed / FIXATION_VEL_THRESHOLD;
+      const dx = this.pos.x - gaze.x;
+      const dy = this.pos.y - gaze.y;
+      const dist = Math.hypot(dx, dy);
+      if (dist < FOVEA_RADIUS && dist > 0.001) {
+        const proximity = 1 - dist / FOVEA_RADIUS; // 1 at center, 0 at edge
+        const strength = proximity * REPULSION_FORCE * fixationStrength;
+        const nx = dx / dist;
+        const ny = dy / dist;
+        this.dispVel.x += nx * strength * dt;
+        this.dispVel.y += ny * strength * dt;
+      }
+    }
 
     // sub-critically damped spring back to home (zero displacement). this is
     // the slow settling that happens after eye motion stops — fluid drag
@@ -299,102 +464,104 @@ class Floater {
     this.disp.x += this.dispVel.x * dt;
     this.disp.y += this.dispVel.y * dt;
 
-    // soft cap on displacement — a runaway noise spike shouldn't fling a
-    // floater 5 screens away. allow large excursions, just not absurd ones.
-    const maxDisp = 2.5;
-    if (this.disp.x >  maxDisp) { this.disp.x =  maxDisp; this.dispVel.x *= 0.5; }
-    if (this.disp.x < -maxDisp) { this.disp.x = -maxDisp; this.dispVel.x *= 0.5; }
-    if (this.disp.y >  maxDisp) { this.disp.y =  maxDisp; this.dispVel.y *= 0.5; }
-    if (this.disp.y < -maxDisp) { this.disp.y = -maxDisp; this.dispVel.y *= 0.5; }
+    // hard displacement cap — keeps floaters on-screen. inelastic: kill the
+    // escape-direction velocity so impulses can't accumulate through the wall.
+    const maxDisp = 0.8;
+    if (this.disp.x >  maxDisp) { this.disp.x =  maxDisp; if (this.dispVel.x > 0) this.dispVel.x = 0; }
+    if (this.disp.x < -maxDisp) { this.disp.x = -maxDisp; if (this.dispVel.x < 0) this.dispVel.x = 0; }
+    if (this.disp.y >  maxDisp) { this.disp.y =  maxDisp; if (this.dispVel.y > 0) this.dispVel.y = 0; }
+    if (this.disp.y < -maxDisp) { this.disp.y = -maxDisp; if (this.dispVel.y < 0) this.dispVel.y = 0; }
 
-    // very slow buoyant sinking of the trajectory itself
-    this.center.y += BUOYANT_DRIFT * (0.6 + this.depth * 0.7) * dt;
-    if (this.center.y > 1.2) {
-      this.center.y = -1.2;
-      this.center.x = rand(-0.85, 0.85);
+    // gravity on home position — accumulates slowly, making floaters drift
+    // toward the bottom of the field over 8-12 seconds.
+    this.vel.x += (this.gravX + (Math.random() - 0.5) * 0.075) * this.gravStr * dt;
+    this.vel.y += (this.gravStr + (Math.random() - 0.5) * 0.032) * dt;
+
+    // gravity on visible displacement — creates IMMEDIATE downward drift the
+    // viewer can see right now, not just after seconds of accumulation.
+    // The spring fights this, reaching an equilibrium slightly below center.
+    this.dispVel.y += this.gravStr * 4.0 * dt;
+
+    // gaze-up lift — only on the spring displacement, NOT on the home position.
+    // vel.y is gravity-only: the home always falls. dispVel gives the immediate
+    // visual rise when looking up; the spring brings it back when you look away.
+    if (gaze.y < -LOOK_UP_THRESHOLD) {
+      const lookUpAmt = clamp(-gaze.y - LOOK_UP_THRESHOLD, 0, 0.9);
+      const liftScale = 0.5 + this.depth * 0.8;
+      this.dispVel.y -= lookUpAmt * LIFT_FORCE * 3.0 * liftScale * dt;
     }
+
+    this.vel.x = clamp(this.vel.x, -0.5, 0.5);
+    this.vel.y = clamp(this.vel.y,  0.0, 0.6); // home only falls, never rises
+
+    this.center.x += this.vel.x * dt;
+    this.center.y += this.vel.y * dt;
+
+    if (this.center.x >  1.4) this.center.x = -1.4;
+    if (this.center.x < -1.4) this.center.x =  1.4;
+    if (this.center.y >  1.1) this.respawn();
 
     this.pos.x = trajX + this.disp.x;
     this.pos.y = trajY + this.disp.y;
   }
 
+  respawn() {
+    this.center.y = -1.05 - Math.random() * 0.15; // just above visible top
+    this.center.x = rand(-0.85, 0.85);
+    this.vel.x    = (Math.random() - 0.5) * 0.04;
+    this.vel.y    = 0;
+    this.disp.x   = this.disp.y   = 0;
+    this.dispVel.x = this.dispVel.y = 0;
+  }
+
   draw(ctx, opacityMul = 1) {
+    const alpha = this.opacity * opacityMul;
+    if (alpha < 0.005) return;
+
     const sx = (this.pos.x * 0.5 + 0.5) * W;
     const sy = (this.pos.y * 0.5 + 0.5) * H;
+    if (sx < -250 || sx > W + 250 || sy < -250 || sy > H + 250) return;
+
     const scale = (Math.min(W, H) / 900) * DPR;
-    const op = this.opacity * opacityMul;
-    if (op < 0.001) return;
 
     ctx.save();
     ctx.translate(sx, sy);
     ctx.scale(scale, scale);
+    ctx.lineCap  = 'round';
+    ctx.lineJoin = 'round';
 
-    if (this.type === 'string') {
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
-      ctx.strokeStyle = '#1a1108';
+    // Bezier-smoothed path — midpoint technique gives organic curves without
+    // losing the wiggly character of the polyline skeleton.
+    const stroke = () => {
+      const p = this.path;
       ctx.beginPath();
-      ctx.moveTo(this.path[0].x, this.path[0].y);
-      for (let i = 1; i < this.path.length - 1; i++) {
-        const p = this.path[i], n = this.path[i + 1];
-        ctx.quadraticCurveTo(p.x, p.y, (p.x + n.x) / 2, (p.y + n.y) / 2);
+      ctx.moveTo(p[0].x, p[0].y);
+      for (let i = 1; i < p.length - 1; i++) {
+        const mx = (p[i].x + p[i + 1].x) * 0.5;
+        const my = (p[i].y + p[i + 1].y) * 0.5;
+        ctx.quadraticCurveTo(p[i].x, p[i].y, mx, my);
       }
-      const last = this.path[this.path.length - 1];
-      ctx.lineTo(last.x, last.y);
-
-      // ink-bleed halo: wide diffuse pass like pigment soaking into paper
-      ctx.shadowColor = 'rgba(20,12,6,0.5)';
-      ctx.shadowBlur = this.blur * 2.4;
-      ctx.lineWidth = this.lineW * 4.5;
-      ctx.globalAlpha = op * 0.18;
+      ctx.lineTo(p[p.length - 1].x, p[p.length - 1].y);
       ctx.stroke();
+    };
 
-      // body strokes: layered for soft edges, tightening progressively
-      ctx.shadowBlur = this.blur;
-      for (let pass = 0; pass < 3; pass++) {
-        ctx.lineWidth = (3.2 - pass) * this.lineW;
-        ctx.globalAlpha = op * (1 - pass * 0.22);
-        ctx.stroke();
-      }
-
-      // beads / nodules
-      ctx.shadowBlur = this.blur * 0.5;
-      ctx.fillStyle = '#0e0804';
-      for (let i = 0; i < this.path.length; i += 2) {
-        const p = this.path[i];
-        ctx.globalAlpha = op * 1.7;
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, 1.3 * p.w * (0.5 + this.depth), 0, Math.PI * 2);
-        ctx.fill();
-      }
-    } else if (this.type === 'cell') {
-      const r = this.size;
-      const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, r * 2.4);
-      grad.addColorStop(0,    `rgba(18,11,5,${op})`);
-      grad.addColorStop(0.55, `rgba(18,11,5,${op * 0.35})`);
-      grad.addColorStop(1,    'rgba(18,11,5,0)');
-      ctx.fillStyle = grad;
-      ctx.beginPath();
-      ctx.arc(0, 0, r * 2.4, 0, Math.PI * 2);
-      ctx.fill();
-    } else { // ring
-      ctx.strokeStyle = '#1a1108';
-      ctx.shadowColor = 'rgba(20,12,6,0.3)';
-      // ink-bleed halo
-      ctx.shadowBlur = this.blur * 2.0;
-      ctx.lineWidth = this.lineW * 3.5;
-      ctx.globalAlpha = op * 0.22;
-      ctx.beginPath();
-      ctx.arc(0, 0, this.size, 0, Math.PI * 2);
-      ctx.stroke();
-      // body
-      ctx.shadowBlur = this.blur;
-      ctx.lineWidth = this.lineW;
-      ctx.globalAlpha = op;
-      ctx.beginPath();
-      ctx.arc(0, 0, this.size, 0, Math.PI * 2);
-      ctx.stroke();
-    }
+    const b = this.blur * DPR;
+    // Wide atmospheric halo — the refractive diffusion of vitreous gel around strand
+    ctx.save();
+    ctx.filter      = `blur(${(b * 3.5).toFixed(1)}px)`;
+    ctx.globalAlpha = alpha * 0.18;
+    ctx.strokeStyle = 'rgba(235, 242, 255, 1)';
+    ctx.lineWidth   = this.lineW * 3.5;
+    stroke();
+    ctx.restore();
+    // Thin bright core — the strand itself, barely there
+    ctx.save();
+    ctx.filter      = `blur(${(b * 0.55).toFixed(1)}px)`;
+    ctx.globalAlpha = alpha * 0.78;
+    ctx.strokeStyle = 'rgba(255, 255, 255, 1)';
+    ctx.lineWidth   = this.lineW * 0.55;
+    stroke();
+    ctx.restore();
 
     ctx.restore();
   }
@@ -416,12 +583,18 @@ floaters.sort((a, b) => a.depth - b.depth);
 // ── eye tracking ──────────────────────────────────────────────────────────────
 const video = document.getElementById('cam');
 const status = document.getElementById('status');
+const monitor = document.getElementById('eye-monitor');
+const mctx = monitor.getContext('2d');
 
 let landmarker = null;
 let rawGaze = { x: 0, y: 0 };
 let gaze = { x: 0, y: 0 };
 let gazePrev = { x: 0, y: 0 };
 let gazeVel = { x: 0, y: 0 };
+// separate heavily-smoothed gaze used ONLY for background panning —
+// decoupled from floater gaze so background stays stable while floaters
+// react quickly to eye movements.
+let bgGaze = { x: 0, y: 0 };
 let lastVideoTime = -1;
 
 const EYE = {
@@ -463,6 +636,87 @@ function computeGaze(lm) {
 
   return { x: clamp(gx, -1.2, 1.2), y: clamp(gy, -1.2, 1.2) };
 }
+
+// ── tracking monitor — abstract gaze HUD ─────────────────────────────────────
+// Apple-style schematic: no raw video, no ink outlines.
+// Two almond eye shapes with live iris dots driven by the smoothed gaze signal.
+
+function drawEyeMonitor() {
+  const MW = monitor.width;
+  const MH = monitor.height;
+  const s  = MW / 220;
+
+  mctx.clearRect(0, 0, MW, MH);
+
+  // subtle top-highlight — gives the glass panel its Apple depth
+  const sheen = mctx.createLinearGradient(0, 0, 0, MH * 0.55);
+  sheen.addColorStop(0, 'rgba(255,255,255,0.07)');
+  sheen.addColorStop(1, 'rgba(255,255,255,0.00)');
+  mctx.fillStyle = sheen;
+  mctx.fillRect(0, 0, MW, MH);
+
+  const eyeY   = 36 * s;
+  const eyeHW  = 38 * s;
+  const eyeHH  = 18 * s;
+  const leftX  = 63 * s;
+  const rightX = 157 * s;
+
+  const drawAlmond = (cx, cy, hw, hh) => {
+    mctx.beginPath();
+    mctx.moveTo(cx - hw, cy);
+    mctx.bezierCurveTo(cx - hw * 0.42, cy - hh, cx + hw * 0.42, cy - hh, cx + hw, cy);
+    mctx.bezierCurveTo(cx + hw * 0.42, cy + hh, cx - hw * 0.42, cy + hh, cx - hw, cy);
+    mctx.closePath();
+  };
+
+  const openHH = eyeHH * Math.max(1 - blinkCoverage * 0.92, 0.04);
+
+  mctx.save();
+  mctx.strokeStyle = 'rgba(255, 255, 255, 0.22)';
+  mctx.lineWidth   = 1.4 * s;
+  drawAlmond(leftX,  eyeY, eyeHW, openHH); mctx.stroke();
+  drawAlmond(rightX, eyeY, eyeHW, openHH); mctx.stroke();
+  mctx.restore();
+
+  const irisR   = 7 * s;
+  const maxOffX = (eyeHW - irisR) * 0.60;
+  const maxOffY = Math.max(openHH - irisR, 0) * 0.82;
+  const ix = clamp(gaze.x, -1, 1) * maxOffX;
+  const iy = clamp(gaze.y, -1, 1) * maxOffY;
+
+  if (openHH > irisR * 0.6) {
+    // iris ring tints green when look-up lift is active — quiet feedback signal
+    const liftOn = gaze.y < -LOOK_UP_THRESHOLD;
+    mctx.save();
+    mctx.strokeStyle = liftOn ? 'rgba(120, 230, 160, 0.72)' : 'rgba(255, 255, 255, 0.58)';
+    mctx.lineWidth   = 1.2 * s;
+    for (const cx of [leftX, rightX]) {
+      mctx.beginPath();
+      mctx.arc(cx + ix, eyeY + iy, irisR, 0, Math.PI * 2);
+      mctx.stroke();
+    }
+    mctx.restore();
+
+    mctx.fillStyle = 'rgba(255, 255, 255, 0.95)';
+    for (const cx of [leftX, rightX]) {
+      mctx.beginPath();
+      mctx.arc(cx + ix, eyeY + iy, 2.8 * s, 0, Math.PI * 2);
+      mctx.fill();
+    }
+  }
+
+  mctx.fillStyle = '#30D158';
+  mctx.beginPath();
+  mctx.arc(204 * s, 13 * s, 3 * s, 0, Math.PI * 2);
+  mctx.fill();
+
+  mctx.font         = (9 * s) + 'px -apple-system, "Helvetica Neue", sans-serif';
+  mctx.fillStyle    = 'rgba(255, 255, 255, 0.28)';
+  mctx.textAlign    = 'center';
+  mctx.textBaseline = 'bottom';
+  mctx.fillText('eye tracking', 110 * s, 72 * s);
+}
+
 
 async function initTracking() {
   if (!window.isSecureContext) {
@@ -527,6 +781,9 @@ function frame(now) {
     const res = landmarker.detectForVideo(video, now);
     if (res.faceLandmarks && res.faceLandmarks[0]) {
       rawGaze = computeGaze(res.faceLandmarks[0]);
+      drawEyeMonitor();
+    } else {
+      mctx.clearRect(0, 0, monitor.width, monitor.height);
     }
     if (res.faceBlendshapes && res.faceBlendshapes[0]) {
       const cats = res.faceBlendshapes[0].categories;
@@ -549,114 +806,115 @@ function frame(now) {
   }
   // advance eyelid animation. coverage follows a sin(πt) envelope so it closes
   // smoothly to peak then opens again over BLINK_DURATION.
-  let blinkCoverage = 0;
+  blinkCoverage = 0;
   if (blinkAnimT >= 0) {
     blinkAnimT += dt;
     const tt = blinkAnimT / BLINK_DURATION;
     if (tt >= 1) {
       blinkAnimT = -1;
     } else {
-      blinkCoverage = Math.sin(tt * Math.PI);
+      // asymmetric: snap closed (first 40%) then drift open (last 60%)
+      blinkCoverage = tt < 0.4
+        ? Math.sin((tt / 0.4) * Math.PI * 0.5)
+        : Math.cos(((tt - 0.4) / 0.6) * Math.PI * 0.5);
+      // at peak (tt≥0.5), apply queued scene — hidden under fully-closed lids
+      if (tt >= 0.5 && pendingScene >= 0) {
+        currentScene = pendingScene;
+        pendingScene = -1;
+        sceneFlashT  = 0; // flash starts as lids re-open, not at trigger
+      }
     }
   }
 
-  // smooth raw gaze (low-pass) before computing velocity
-  const a = 0.22;
+  // smooth raw gaze — higher alpha = faster response = stronger floater coupling
+  const a = 0.42;
   gaze.x += (rawGaze.x - gaze.x) * a;
   gaze.y += (rawGaze.y - gaze.y) * a;
+
+  // background gaze tracks much more slowly (alpha=0.07 ≈ 15-frame lag),
+  // so the photo pan is a gentle drift rather than jittery tracking.
+  bgGaze.x += (rawGaze.x - bgGaze.x) * 0.07;
+  bgGaze.y += (rawGaze.y - bgGaze.y) * 0.07;
 
   gazeVel.x = (gaze.x - gazePrev.x) / Math.max(dt, 0.001);
   gazeVel.y = (gaze.y - gazePrev.y) / Math.max(dt, 0.001);
   gazePrev.x = gaze.x;
   gazePrev.y = gaze.y;
 
+  // saccade audio trigger — edge-detect rising past threshold so we play one
+  // tone per saccade, not one per frame the gaze is moving fast
+  const gazeSpeed = Math.hypot(gazeVel.x, gazeVel.y);
+  if (gazeSpeed > SACCADE_AUDIO_TRIGGER && !saccadeFired) {
+    audio.saccade(gazeSpeed);
+    saccadeFired = true;
+  } else if (gazeSpeed < SACCADE_AUDIO_RESET) {
+    saccadeFired = false;
+  }
+
   // ── background ──
   ctx.globalCompositeOperation = 'source-over';
   ctx.globalAlpha = 1;
+  {
+    const scene = SKY_SCENES[currentScene];
 
-  if (bgImageReady) {
-    // panoramic image: fit-to-cover with a small extra zoom so we have pan
-    // room in both axes. shift opposite to gaze (world stays fixed in space,
-    // viewer's eye/head rotated).
-    const img = bgImage;
-    const scale = Math.max(W / img.width, H / img.height) * 1.18;
-    const drawW = img.width * scale;
-    const drawH = img.height * scale;
-    const maxPanX = (drawW - W) * 0.5;
-    const maxPanY = (drawH - H) * 0.5;
-    const panX = clamp(gaze.x, -1, 1) * maxPanX;
-    const panY = clamp(gaze.y, -1, 1) * maxPanY;
-    const xOff = (W - drawW) * 0.5 - panX;
-    const yOff = (H - drawH) * 0.5 - panY;
+    const img = bgImages[currentScene];
+    if (img && img.complete && img.naturalWidth > 0) {
+      // Each photo is shown as-is — no colour grading, no tints.
+      // fit-to-cover with gaze pan so the world stays fixed as the eye moves.
+      const scale = Math.max(W / img.width, H / img.height) * 1.18;
+      const drawW = img.width  * scale;
+      const drawH = img.height * scale;
+      const panX  = clamp(bgGaze.x, -1, 1) * (drawW - W) * 0.14;
+      const panY  = clamp(bgGaze.y, -1, 1) * (drawH - H) * 0.14;
+      ctx.drawImage(img, (W - drawW) * 0.5 - panX, (H - drawH) * 0.5 - panY, drawW, drawH);
+    } else {
+      // Procedural fallback while photo loads
+      const hy = scene.horizonY * H;
+      const skyGrad = ctx.createLinearGradient(0, 0, 0, hy);
+      skyGrad.addColorStop(0, scene.sky[0]); skyGrad.addColorStop(0.45, scene.sky[1]);
+      skyGrad.addColorStop(0.78, scene.sky[2]); skyGrad.addColorStop(1, scene.sky[3] || scene.sky[2]);
+      ctx.fillStyle = skyGrad; ctx.fillRect(0, 0, W, hy + 2);
+      const gGrad = ctx.createLinearGradient(0, hy, 0, H);
+      gGrad.addColorStop(0, scene.ground[0]); gGrad.addColorStop(1, scene.ground[1]);
+      ctx.fillStyle = gGrad; ctx.fillRect(0, hy, W, H - hy);
+    }
 
-    // soft treatment so the image stays a *condition of seeing*, not content:
-    // slight blur (out-of-focus periphery), desaturate, gentle brightness lift
-    ctx.save();
-    ctx.filter = 'blur(2px) saturate(0.55) brightness(1.06) contrast(0.92)';
-    ctx.drawImage(img, xOff, yOff, drawW, drawH);
-    ctx.filter = 'none';
-
-    // warm overlay tint to unify with the rest of the palette
-    const tWarm = now * 0.00004;
-    const warmth = (Math.sin(tWarm) + 1) * 0.5;
-    const tint = lerpRGB([245, 232, 208], [232, 215, 188], warmth);
-    ctx.globalCompositeOperation = 'multiply';
-    ctx.globalAlpha = 0.18;
-    ctx.fillStyle = `rgb(${tint.map(Math.round).join(',')})`;
-    ctx.fillRect(0, 0, W, H);
-
-    // soft vignette to focus the eye toward center
-    ctx.globalCompositeOperation = 'multiply';
-    ctx.globalAlpha = 1;
-    const vig = ctx.createRadialGradient(W * 0.5, H * 0.5, Math.min(W, H) * 0.2, W * 0.5, H * 0.5, Math.max(W, H) * 0.7);
-    vig.addColorStop(0, 'rgba(255,255,255,1)');
-    vig.addColorStop(1, 'rgba(160,140,110,1)');
-    ctx.fillStyle = vig;
-    ctx.fillRect(0, 0, W, H);
-    ctx.restore();
-  } else {
-    // fallback: warm radial wash with slow palette modulation
-    const tWarm = now * 0.00004;
-    const warmth = (Math.sin(tWarm) + 1) * 0.5;
-    const inner = lerpRGB([252, 246, 232], [246, 236, 215], warmth);
-    const outer = lerpRGB([212, 192, 162], [196, 170, 135], warmth);
-    const wash = ctx.createRadialGradient(W * 0.5, H * 0.45, 0, W * 0.5, H * 0.5, Math.max(W, H) * 0.75);
-    wash.addColorStop(0, `rgb(${inner.map(Math.round).join(',')})`);
-    wash.addColorStop(1, `rgb(${outer.map(Math.round).join(',')})`);
-    ctx.fillStyle = wash;
-    ctx.fillRect(0, 0, W, H);
-
-    // paper-fiber overlay only on the wash (would muddy a real image)
-    if (!paperPattern) paperPattern = ctx.createPattern(paperTex, 'repeat');
-    ctx.globalCompositeOperation = 'multiply';
-    ctx.globalAlpha = 0.28;
-    ctx.fillStyle = paperPattern;
-    ctx.fillRect(0, 0, W, H);
   }
 
   // ── floaters ──
-  // eyelid sweep handles the visual cover; floaters keep near-full opacity so
-  // they remain recognizable in the partial moments of the blink envelope.
   ctx.globalCompositeOperation = 'source-over';
   ctx.globalAlpha = 1;
-  const floaterOpacityMul = 1 - blinkCoverage * 0.25;
   for (const f of floaters) {
-    f.step(dt, gazeVel);
-    f.draw(ctx, floaterOpacityMul);
+    f.step(dt, gaze, gazeVel);
+    f.draw(ctx, 1);
   }
 
   // ── film grain: per-frame breath, very low opacity ──
   if (!grainPattern) grainPattern = ctx.createPattern(grainTex, 'repeat');
   ctx.save();
   ctx.globalCompositeOperation = 'soft-light';
-  ctx.globalAlpha = 0.07;
+  ctx.globalAlpha = 0.12;
   ctx.translate(-Math.random() * grainTex.width, -Math.random() * grainTex.height);
   ctx.fillStyle = grainPattern;
   ctx.fillRect(0, 0, W + grainTex.width, H + grainTex.height);
   ctx.restore();
 
-  // ── eyelid sweep (drawn last, covers everything during a blink) ──
-  drawEyelids(blinkCoverage);
+  // ── blink shutter flash — single bright spike that reads on screen recordings ──
+  if (blinkFlashT >= 0) {
+    blinkFlashT += dt;
+    const flashDur = 0.10; // 100ms total — visible on video, imperceptible in person
+    if (blinkFlashT >= flashDur) {
+      blinkFlashT = -1;
+    } else {
+      ctx.save();
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.globalAlpha = 0.60 * (1 - blinkFlashT / flashDur);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, W, H);
+      ctx.restore();
+    }
+  }
+
 }
 
 requestAnimationFrame(frame);
@@ -669,12 +927,29 @@ const aboutPanel    = document.getElementById('about-panel');
 const closeAboutBtn = document.getElementById('closeAboutBtn');
 const aboutLink     = document.getElementById('about-link');
 const homeLink      = document.getElementById('home-link');
+const soundLink     = document.getElementById('sound-link');
 const nav           = document.getElementById('nav');
+
+let navFadeTimer = null;
+function scheduleNavFade() {
+  clearTimeout(navFadeTimer);
+  navFadeTimer = setTimeout(() => nav.classList.add('faded'), 3500);
+}
+function revealNav() {
+  if (!nav.classList.contains('shown')) return;
+  nav.classList.remove('faded');
+  scheduleNavFade();
+}
+document.addEventListener('mousemove', revealNav);
+document.addEventListener('touchstart', revealNav, { passive: true });
 
 let started = false;
 async function startExperience() {
   entry.classList.add('gone');
-  nav.classList.add('shown');           // nav fades in alongside the entry fade-out
+  nav.classList.add('shown');
+  monitor.classList.add('shown');
+  scheduleNavFade();
+  audio.start();                        // user gesture — safe to init audio
   if (started) return;                  // re-entering = just hide the overlay
   started = true;
   status.textContent = 'starting…';
@@ -689,10 +964,11 @@ async function startExperience() {
 }
 
 function backToLanding() {
-  // bring the entry overlay back. tracking + floaters keep running quietly
-  // behind the frosted glass, so re-entering is instant.
   entry.classList.remove('gone');
   nav.classList.remove('shown');
+  nav.classList.remove('faded');
+  clearTimeout(navFadeTimer);
+  monitor.classList.remove('shown');
 }
 
 function openAbout()  { aboutPanel.classList.add('open'); }
@@ -703,6 +979,30 @@ aboutEntryBtn.addEventListener('click', openAbout);
 aboutLink.addEventListener('click', openAbout);
 homeLink.addEventListener('click', backToLanding);
 closeAboutBtn.addEventListener('click', closeAbout);
+soundLink.addEventListener('click', () => {
+  const muted = audio.toggleMute();
+  soundLink.textContent = muted ? 'unmute' : 'mute';
+});
+
+// ── title drift ──────────────────────────────────────────────────────────────
+// each letter of the title gets its own slow drift through sine waves of
+// different periods, with a per-letter phase offset so the word shimmers like
+// things suspended in fluid. cycles are slow so the motion reads as drift,
+// not jitter.
+const titleLetters = document.querySelectorAll('.title-drift > span');
+function animateTitleDrift(now) {
+  requestAnimationFrame(animateTitleDrift);
+  if (entry.classList.contains('gone')) return; // skip work while hidden
+  const t = now * 0.001;
+  titleLetters.forEach((el, i) => {
+    const phase = i * 0.85;
+    const y   = Math.sin(t * 0.45 + phase)        * 7.0;
+    const x   = Math.cos(t * 0.28 + phase * 1.3)  * 3.5;
+    const rot = Math.sin(t * 0.35 + phase * 0.9)  * 1.4;
+    el.style.transform = `translate(${x.toFixed(2)}px, ${y.toFixed(2)}px) rotate(${rot.toFixed(2)}deg)`;
+  });
+}
+requestAnimationFrame(animateTitleDrift);
 
 aboutPanel.addEventListener('click', (e) => {
   if (e.target === aboutPanel) closeAbout();

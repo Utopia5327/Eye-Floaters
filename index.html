@@ -4,100 +4,136 @@
 <meta charset="utf-8">
 <title>Floaters</title>
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@1,300;1,400&display=swap" rel="stylesheet">
+
 <style>
   :root {
-    --serif: "Iowan Old Style", "Palatino Linotype", "Palatino", "Georgia", serif;
-    --ink:       #1a1108;
-    --ink-mid:   rgba(26, 17, 8, 0.66);
-    --ink-faint: rgba(26, 17, 8, 0.36);
-    --paper:     #efe7d7;
+    --ink:        #1a1108;
+    --ink-mid:    rgba(26, 17, 8, 0.62);
+    --ink-faint:  rgba(26, 17, 8, 0.34);
+    --paper:      #efe7d7;
+    --paper-warm: #f6efde;
+    --sans:       -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
+    --display:    "Cormorant Garamond", "Palatino Linotype", Georgia, serif;
   }
 
   html, body {
     margin: 0; padding: 0; overflow: hidden;
     background: var(--paper);
-    font-family: var(--serif);
-    font-size: 17px;
-    line-height: 1.65;
+    font-family: var(--sans);
+    font-size: 15px;
+    line-height: 1.6;
+    font-weight: 400;
     color: var(--ink);
     -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    letter-spacing: -0.012em;
   }
 
-  /* type primitives */
-  .t-display { font-style: italic; font-weight: 400; font-size: clamp(60px, 9.5vw, 96px); line-height: 1; letter-spacing: -0.005em; color: var(--ink); }
-  .t-body    { font-style: normal; font-weight: 400; font-size: 17px; line-height: 1.65; color: var(--ink-mid); }
-  .t-caption { font-style: italic; font-weight: 400; font-size: 13px; line-height: 1.5; color: var(--ink-mid); }
+  /* ── three type roles, no exceptions ─────────────────────────────────────── */
+  .t-display {
+    font-family: var(--display);
+    font-style: italic;
+    font-weight: 300;
+    font-size: clamp(76px, 11vw, 120px);
+    line-height: 1.0;
+    letter-spacing: -0.03em;
+    color: var(--ink);
+  }
+  .t-body { font-size: 15px; line-height: 1.68; letter-spacing: -0.003em; color: var(--ink-mid); }
+  .t-meta { font-size: 11px; line-height: 1.5; letter-spacing: 0.01em; color: var(--ink-mid); }
 
-  /* link primitive — italic, underline on hover only */
+  /* ── primitives ──────────────────────────────────────────────────────────── */
   .link {
     background: none; border: none; padding: 0;
-    font: inherit; color: var(--ink-mid);
-    font-style: italic;
+    font: inherit;
+    color: var(--ink-mid);
     cursor: pointer;
+    letter-spacing: 0.01em;
     border-bottom: 1px solid transparent;
     transition: color 0.3s, border-color 0.3s;
   }
   .link:hover { color: var(--ink); border-bottom-color: var(--ink-faint); }
 
-  /* CTA: same family, slightly larger, always-visible underline. not a button. */
-  .cta-link {
+  .cta-arrow {
     background: none; border: none;
-    font: inherit;
-    font-style: italic;
-    font-size: 20px;
-    color: var(--ink);
+    padding: 16px 22px;
     cursor: pointer;
-    padding: 4px 2px;
-    border-bottom: 1px solid var(--ink-faint);
-    transition: border-color 0.4s, transform 0.4s;
+    color: var(--ink-mid);
+    display: inline-flex;
+    align-items: center; justify-content: center;
+    transition: color 0.4s, transform 0.4s;
   }
-  .cta-link:hover {
-    border-bottom-color: var(--ink);
-    transform: translateY(-1px);
+  .cta-arrow:hover {
+    color: var(--ink);
+    transform: translateX(5px);
   }
+  .cta-arrow svg { display: block; }
 
-  /* chip: frosted-paper background so floating controls stay legible
-     against any panorama (white walls, mountains, sky) without being loud. */
   .chip {
     background: rgba(239, 231, 215, 0.72);
     -webkit-backdrop-filter: blur(8px);
     backdrop-filter: blur(8px);
     padding: 7px 14px;
     border-radius: 999px;
-    border: 1px solid rgba(26, 17, 8, 0.06);
+    border: 1px solid rgba(26, 17, 8, 0.05);
     color: var(--ink-mid);
-    font-style: italic;
-    font-size: 13px;
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.055em;
     cursor: pointer;
     transition: color 0.3s, background 0.3s, border-color 0.3s;
   }
   .chip:hover {
     color: var(--ink);
-    background: rgba(239, 231, 215, 0.92);
-    border-color: rgba(26, 17, 8, 0.12);
+    background: rgba(239, 231, 215, 0.9);
+    border-color: rgba(26, 17, 8, 0.1);
   }
 
-  /* canvas + camera */
+  /* ── canvas + camera ─────────────────────────────────────────────────────── */
   #scene { display: block; position: fixed; inset: 0; width: 100vw; height: 100vh; }
-  #cam   { position: fixed; bottom: 14px; right: 14px; width: 110px; height: 82px;
-           opacity: 0.14; transform: scaleX(-1); border-radius: 3px; pointer-events: none; }
 
-  /* status: chip-styled, lives bottom-left */
+  #cam {
+    position: fixed; bottom: 0; right: 0;
+    width: 2px; height: 2px;
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  #eye-monitor {
+    position: fixed;
+    bottom: 22px; right: 24px;
+    width: 220px; height: 80px;
+    background: rgba(0, 0, 0, 0.52);
+    -webkit-backdrop-filter: blur(28px) saturate(180%);
+    backdrop-filter: blur(28px) saturate(180%);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 22px;
+    z-index: 60;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.8s;
+  }
+  #eye-monitor.shown { opacity: 1; }
+
   #status {
     position: fixed; bottom: 22px; left: 24px; z-index: 50;
-    font-style: italic; font-size: 13px; color: var(--ink-mid);
+    font-size: 11px; letter-spacing: 0.01em; color: var(--ink-mid);
     background: rgba(239, 231, 215, 0.72);
     -webkit-backdrop-filter: blur(8px);
     backdrop-filter: blur(8px);
     padding: 6px 12px;
     border-radius: 999px;
-    border: 1px solid rgba(26, 17, 8, 0.06);
+    border: 1px solid rgba(26, 17, 8, 0.05);
     opacity: 0;
     transition: opacity 0.6s;
   }
   #status.shown { opacity: 1; }
 
-  /* ── entry: doorway over the running experience ───────────────────────────── */
+  /* ── entry ────────────────────────────────────────────────────────────────── */
   #entry {
     position: fixed; inset: 0; z-index: 100;
     display: flex; align-items: center; justify-content: center;
@@ -107,8 +143,7 @@
     transition: opacity 1.4s ease, backdrop-filter 1.4s ease;
   }
   #entry.gone {
-    opacity: 0;
-    pointer-events: none;
+    opacity: 0; pointer-events: none;
     backdrop-filter: blur(0px);
     -webkit-backdrop-filter: blur(0px);
   }
@@ -118,16 +153,30 @@
     max-width: 30rem;
     padding: 0 1.5rem;
   }
-  .entry-card h1 { margin: 0 0 1.6rem 0; }
-  .entry-card .lede { margin: 0 auto 2.6rem auto; max-width: 24rem; }
+  .entry-card h1     { margin: 0 0 1.4rem 0; }
+  .entry-card .lede  { margin: 0 auto 2.4rem auto; max-width: 24rem; }
+  .entry-card .entry-hint {
+    margin: 1.2rem 0 0 0;
+    font-style: italic;
+  }
+
+  /* the title's letters drift like floaters in fluid — animated in main.js.
+     each <span> animates independently so the word shimmers slightly. */
+  .title-drift {
+    display: inline-block;
+  }
+  .title-drift > span {
+    display: inline-block;
+    will-change: transform;
+  }
 
   .entry-foot {
     position: absolute;
-    bottom: 28px; left: 0; right: 0;
+    bottom: 26px; left: 0; right: 0;
     text-align: center;
   }
 
-  /* ── nav (top-right, standard nav location) ───────────────────────────────── */
+  /* ── nav ─────────────────────────────────────────────────────────────────── */
   #nav {
     position: fixed;
     top: 22px; right: 24px;
@@ -137,8 +186,9 @@
     transition: opacity 0.8s;
   }
   #nav.shown { opacity: 1; }
+  #nav.shown.faded { opacity: 0; pointer-events: none; }
 
-  /* ── about panel ──────────────────────────────────────────────────────────── */
+  /* ── about panel ─────────────────────────────────────────────────────────── */
   #about-panel {
     position: fixed; inset: 0; z-index: 110;
     display: flex; align-items: center; justify-content: center;
@@ -155,69 +205,171 @@
     max-width: 34rem;
     padding: 2.5rem 2rem 3rem;
   }
-  .about-card p { margin: 0 0 1.5rem 0; }
+  .about-card p { margin: 0 0 1.4rem 0; }
   .about-card .lead {
+    font-family: var(--display);
     font-style: italic;
-    font-size: 19px;
-    line-height: 1.55;
+    font-weight: 300;
+    font-size: 22px;
+    line-height: 1.45;
     color: var(--ink);
-    margin: 0 0 2rem 0;
+    margin: 0 0 1.8rem 0;
+    letter-spacing: -0.012em;
   }
-  .about-card em { color: var(--ink); font-style: italic; }
+  .about-card em {
+    font-family: var(--display);
+    font-style: italic;
+    color: var(--ink);
+  }
   .about-card .rule {
     width: 28px; height: 1px;
     background: var(--ink-faint);
-    margin: 2rem 0;
+    margin: 1.8rem 0;
     border: 0;
   }
   .about-card .signature {
-    margin-top: 2rem;
+    margin-top: 1.8rem;
     color: var(--ink-faint);
+    letter-spacing: 0.02em;
   }
 
   .about-close {
     position: fixed;
     top: 22px; right: 24px;
   }
+
+  /* ═══════════════════════════════════════════════════════════════════════════
+     DARK SYSTEM — premium dark identity, replaces warm-paper aesthetic
+     ═══════════════════════════════════════════════════════════════════════════ */
+
+  html, body {
+    background: #06060a;
+    color: rgba(255, 255, 255, 0.85);
+  }
+
+  /* Entry screen — deep black glass, cinematic */
+  #entry {
+    background: rgba(6, 6, 10, 0.93);
+    backdrop-filter: blur(40px) saturate(120%);
+    -webkit-backdrop-filter: blur(40px) saturate(120%);
+  }
+  #entry.gone {
+    backdrop-filter: blur(0px);
+    -webkit-backdrop-filter: blur(0px);
+  }
+
+  .entry-card h1.t-display { color: rgba(255, 255, 255, 0.96); }
+  .entry-card .lede.t-body { color: rgba(255, 255, 255, 0.42); }
+
+  .cta-arrow {
+    color: rgba(255, 255, 255, 0.36);
+  }
+  .cta-arrow:hover {
+    color: rgba(255, 255, 255, 0.90);
+  }
+
+  .entry-foot .link {
+    color: rgba(255, 255, 255, 0.24);
+  }
+  .entry-foot .link:hover {
+    color: rgba(255, 255, 255, 0.58);
+    border-bottom-color: transparent;
+  }
+
+  /* Nav chips — dark glass matching the eye monitor */
+  .chip {
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    color: rgba(255, 255, 255, 0.58);
+    -webkit-backdrop-filter: blur(28px) saturate(180%);
+    backdrop-filter: blur(28px) saturate(180%);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.055em;
+  }
+  .chip:hover {
+    background: rgba(255, 255, 255, 0.11);
+    border-color: rgba(255, 255, 255, 0.14);
+    color: rgba(255, 255, 255, 0.95);
+  }
+
+  /* Status bar — dark glass */
+  #status {
+    background: rgba(0, 0, 0, 0.50);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    color: rgba(255, 255, 255, 0.46);
+    -webkit-backdrop-filter: blur(28px) saturate(180%);
+    backdrop-filter: blur(28px) saturate(180%);
+  }
+
+  /* About panel — dark editorial */
+  #about-panel {
+    background: rgba(6, 6, 10, 0.97);
+    backdrop-filter: blur(40px);
+    -webkit-backdrop-filter: blur(40px);
+  }
+  .about-card .lead   { color: rgba(255, 255, 255, 0.90); }
+  .about-card p.t-body { color: rgba(255, 255, 255, 0.50); letter-spacing: -0.003em; }
+  .about-card em      { color: rgba(255, 255, 255, 0.90); }
+  .about-card .rule   { background: rgba(255, 255, 255, 0.10); }
+  .about-card .signature { color: rgba(255, 255, 255, 0.24); }
+
+  .about-close        { color: rgba(255, 255, 255, 0.30); }
+  .about-close:hover  { color: rgba(255, 255, 255, 0.78); border-bottom-color: transparent; }
 </style>
 </head>
 <body>
   <canvas id="scene"></canvas>
   <video id="cam" autoplay playsinline muted></video>
+  <canvas id="eye-monitor" width="440" height="160"></canvas>
   <div id="status"></div>
 
   <nav id="nav">
     <button id="home-link" class="chip" type="button">home</button>
     <button id="about-link" class="chip" type="button">about</button>
+    <button id="sound-link" class="chip" type="button">mute</button>
   </nav>
 
   <div id="entry">
     <div class="entry-card">
-      <h1 class="t-display">Floaters</h1>
-      <p class="lede t-body">The cobwebs drifting in your eyes you've stopped paying attention to.</p>
-      <button id="enterBtn" class="cta-link" type="button">begin</button>
+      <h1 class="t-display title-drift" aria-label="Floaters"><span>F</span><span>l</span><span>o</span><span>a</span><span>t</span><span>e</span><span>r</span><span>s</span></h1>
+      <p class="lede t-body">They fall. Look up to keep them afloat. Blink and the world shifts.</p>
+      <button id="enterBtn" class="cta-arrow" type="button" aria-label="begin">
+        <svg width="52" height="12" viewBox="0 0 52 12" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <line x1="0" y1="6" x2="40" y2="6"/>
+          <polyline points="33,1 40,6 33,11"/>
+        </svg>
+      </button>
     </div>
     <div class="entry-foot">
-      <button id="aboutEntryBtn" class="link t-caption" type="button">about</button>
+      <button id="aboutEntryBtn" class="link t-meta" type="button">about</button>
     </div>
   </div>
 
   <div id="about-panel" role="dialog" aria-label="About">
-    <button class="about-close link t-caption" id="closeAboutBtn" type="button">close</button>
+    <button class="about-close link t-meta" id="closeAboutBtn" type="button">close</button>
     <div class="about-card">
-      <p class="lead">There are little shapes drifting in your eyes — cobwebs, fibers, faint specks. You've had them since you were a kid. You probably stopped seeing them.</p>
+      <p class="lead">You have always had them.</p>
 
-      <p class="t-body">One morning I noticed mine again. So I put them on a screen.</p>
+      <p class="t-body">Threads. Specks. A wisp of cobweb at the edge of vision. You've had them since childhood. You just stopped noticing.</p>
+
+      <p class="t-body">One morning, I noticed mine again. I tried to look directly at one.</p>
+
+      <p class="t-body">It moved away.</p>
 
       <hr class="rule">
 
-      <p class="t-body">They're tiny fragments suspended in the gel that fills the eye, casting soft shadows on the retina. They lag and overshoot as you look around. A blink reshuffles them. They accumulate over a lifetime — a quiet clock.</p>
+      <p class="t-body">Floaters are fragments of tissue suspended in the vitreous — the gel that fills your eye. They fall with gravity. Look up, and you hold them aloft. Stop, and they sink.</p>
+
+      <p class="t-body">Try to fix your gaze on one and it evades you. Your eye moves toward it. The floater moves with it. The fovea never arrives.</p>
+
+      <p class="lead">You can only see them by not looking.</p>
 
       <hr class="rule">
 
-      <p class="t-body">I knew what I'd been watching. Claude wrote the math — eye tracking, fluid physics, the right damping for the floaters to feel real. The piece is the translation between the two.</p>
+      <p class="t-body">I built this with Claude — eye tracking, fluid physics, the exact mechanics of the slip. I knew what I'd been watching. Claude knew the math.</p>
 
-      <p class="signature t-caption">— Manas Bhatia, 2026</p>
+      <p class="signature t-meta">— Manas Bhatia, 2026</p>
     </div>
   </div>
 
