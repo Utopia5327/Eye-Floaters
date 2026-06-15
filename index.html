@@ -105,19 +105,38 @@
 
   #eye-monitor {
     position: fixed;
-    bottom: 22px; right: 24px;
-    width: 220px; height: 80px;
+    bottom: 24px; left: 50%; transform: translateX(-50%);
+    width: 300px; height: 100px;
     background: rgba(0, 0, 0, 0.52);
     -webkit-backdrop-filter: blur(28px) saturate(180%);
     backdrop-filter: blur(28px) saturate(180%);
     border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 22px;
+    border-radius: 28px;
     z-index: 60;
     pointer-events: none;
     opacity: 0;
     transition: opacity 0.8s;
   }
   #eye-monitor.shown { opacity: 1; }
+
+  #blink-text {
+    position: fixed;
+    bottom: 148px; left: 50%; transform: translateX(-50%);
+    width: max-content; max-width: 480px;
+    text-align: center;
+    font-family: var(--display);
+    font-style: italic;
+    font-weight: 300;
+    font-size: 17px;
+    line-height: 1.5;
+    letter-spacing: -0.01em;
+    color: rgba(255, 255, 255, 0.72);
+    opacity: 0;
+    transition: opacity 0.45s ease;
+    pointer-events: none;
+    z-index: 30;
+  }
+  #blink-text.visible { opacity: 1; }
 
   #status {
     position: fixed; bottom: 22px; left: 24px; z-index: 50;
@@ -321,7 +340,8 @@
 <body>
   <canvas id="scene"></canvas>
   <video id="cam" autoplay playsinline muted></video>
-  <canvas id="eye-monitor" width="440" height="160"></canvas>
+  <canvas id="eye-monitor" width="600" height="200"></canvas>
+  <div id="blink-text"></div>
   <div id="status"></div>
 
   <nav id="nav">

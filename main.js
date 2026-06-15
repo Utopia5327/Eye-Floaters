@@ -125,18 +125,34 @@ const bgImages = SKY_SCENES.map(scene => {
 // While the eyelids cover the world, the floaters get a gentle impulse and a
 // trajectory phase jitter, so when the eye reopens, the field has subtly
 // reshuffled — exactly what happens in real vitreous after a blink.
-let blinkActive = false;     // current physical eye state
-let rawBlink = 0;            // raw blendshape value
-let blinkAnimT = -1;         // -1 = idle; otherwise seconds since blink fired
-let blinkCoverage = 0;       // 0 = open, 1 = peak closed; drives eye-monitor closure
-let blinkFlashT  = -1;       // white shutter flash for reel legibility
-const BLINK_FIRE_THRESHOLD    = 0.36;  // lower = catches soft/fast blinks
+let blinkActive = false;
+let rawBlink = 0;
+let blinkAnimT = -1;
+let blinkCoverage = 0;
+let blinkFlashT  = -1;
+const BLINK_FIRE_THRESHOLD    = 0.36;
 const BLINK_RELEASE_THRESHOLD = 0.16;
-const BLINK_DURATION          = 0.13; // 130ms — snappy; real blink ≈100-150ms
+const BLINK_DURATION          = 0.13;
+
+// rotating first-person voices — whose floaters are these?
+const BLINK_VOICES = [
+  "Mine looks like a coiled spring. I've had it since I was about seven.",
+  "Just one long thread. It follows me everywhere I look.",
+  "Three small dots, always in formation. I used to count them as a child.",
+  "Like looking through a smudged window that moves when I try to clean it.",
+  "Mine appeared after my retinal detachment. They look like smoke now.",
+  "A single cobweb, always just out of reach. I'm eighty-two. Still surprised by it.",
+  "Dozens of them. My doctor says that's normal. I stopped noticing years ago.",
+  "One ring, one thread. My ophthalmologist says they'll calcify eventually.",
+  "I see mine most clearly against open sky. Always have.",
+  "My grandmother called hers her little companions. I thought she was joking.",
+];
+let blinkVoiceIndex = 0;
+let blinkVoiceTimer = null;
 
 function triggerBlink() {
-  blinkAnimT  = 0;   // drives eye-monitor closure animation
-  blinkFlashT = 0;   // shutter flash
+  blinkAnimT  = 0;
+  blinkFlashT = 0;
   for (const f of floaters) {
     const k = 1.4 * f.depth;
     f.dispVel.x += (Math.random() - 0.5) * k;
@@ -145,10 +161,15 @@ function triggerBlink() {
     f.phase.y   += (Math.random() - 0.5) * 0.45;
   }
   audio.blink();
-  if (SKY_SCENES.length > 1) {
-    let next = currentScene;
-    while (next === currentScene) next = Math.floor(Math.random() * SKY_SCENES.length);
-    currentScene = next;
+
+  // surface the next voice on each blink
+  const el = document.getElementById('blink-text');
+  if (el) {
+    el.textContent = BLINK_VOICES[blinkVoiceIndex % BLINK_VOICES.length];
+    blinkVoiceIndex++;
+    el.classList.add('visible');
+    clearTimeout(blinkVoiceTimer);
+    blinkVoiceTimer = setTimeout(() => el.classList.remove('visible'), 2800);
   }
 }
 
