@@ -329,9 +329,7 @@ const GAZE_DRAG_MAX    = 95.0;  // per-frame cap — high enough for a real sacc
 // floaters are *always* moving, never landing on a stable point.
 const RESTORE_K        = 1.1;   // softer spring — floaters drift longer before settling
 const RESTORE_D        = 0.32;  // lower damping — post-saccade coast is more visible
-const TRAJ_SPEED        = 0.34;  // slightly faster autonomous wandering when eyes are still
-const LOOK_UP_THRESHOLD = 0.06;  // gaze.y must be below −this to count as "looking up"
-const LIFT_FORCE        = 0.30;  // upward force when viewer looks up
+const TRAJ_SPEED        = 0.34;  // autonomous wandering speed
 
 // fixation slip — the conceptual core of the piece. real floaters slip away
 // when you try to look at one, because the eye moves toward the floater and
@@ -341,9 +339,9 @@ const LIFT_FORCE        = 0.30;  // upward force when viewer looks up
 // the fovea push outward with a quadratic falloff; outside the fovea radius
 // they're unaffected. during saccades (high gazeVel) the slip turns off so
 // you can see floaters streak across the field unimpeded.
-const FIXATION_VEL_THRESHOLD = 4.5;  // lenient — tracker noise won't block fixation detection
-const FOVEA_RADIUS           = 0.50; // half of visual-field half-width — a wide 'look at me' zone
-const REPULSION_FORCE        = 90.0; // strong enough to visibly dart the floater away
+const FIXATION_VEL_THRESHOLD = 5.0;  // lenient — tracker noise won't block fixation detection
+const FOVEA_RADIUS           = 0.75; // wide zone — catches even imprecise gaze alignment
+const REPULSION_FORCE        = 220;  // floater darts away fast — conceptual core of the piece
 
 const rand  = (a, b) => a + Math.random() * (b - a);
 const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
@@ -370,10 +368,9 @@ class Floater {
     this.dispVel = { x: 0, y: 0 };
     this.pos     = { x: this.center.x, y: this.center.y };
 
-    // gravity — mostly downward but with an erratic horizontal bias per floater
-    this.vel     = { x: (Math.random() - 0.5) * 0.04, y: 0 };
-    this.gravX   = (Math.random() - 0.5) * 0.08;
-    this.gravStr = 0.020 + depth * 0.035;  // 0.020 (far) → 0.055 (near)
+    // slow lateral drift — each floater wanders horizontally at its own pace
+    this.vel  = { x: (Math.random() - 0.5) * 0.04 };
+    this.gravX = (Math.random() - 0.5) * 0.06;
 
     // All floaters are paths — arrays of {x,y} in local space.
     // Generated as polylines with many short segments so the shapes are
@@ -472,34 +469,15 @@ class Floater {
     if (this.disp.y >  maxDisp) { this.disp.y =  maxDisp; if (this.dispVel.y > 0) this.dispVel.y = 0; }
     if (this.disp.y < -maxDisp) { this.disp.y = -maxDisp; if (this.dispVel.y < 0) this.dispVel.y = 0; }
 
-    // gravity on home position — accumulates slowly, making floaters drift
-    // toward the bottom of the field over 8-12 seconds.
-    this.vel.x += (this.gravX + (Math.random() - 0.5) * 0.075) * this.gravStr * dt;
-    this.vel.y += (this.gravStr + (Math.random() - 0.5) * 0.032) * dt;
-
-    // gravity on visible displacement — creates IMMEDIATE downward drift the
-    // viewer can see right now, not just after seconds of accumulation.
-    // The spring fights this, reaching an equilibrium slightly below center.
-    this.dispVel.y += this.gravStr * 4.0 * dt;
-
-    // gaze-up lift — only on the spring displacement, NOT on the home position.
-    // vel.y is gravity-only: the home always falls. dispVel gives the immediate
-    // visual rise when looking up; the spring brings it back when you look away.
-    if (gaze.y < -LOOK_UP_THRESHOLD) {
-      const lookUpAmt = clamp(-gaze.y - LOOK_UP_THRESHOLD, 0, 0.9);
-      const liftScale = 0.5 + this.depth * 0.8;
-      this.dispVel.y -= lookUpAmt * LIFT_FORCE * 3.0 * liftScale * dt;
-    }
+    // gentle horizontal wander — each floater drifts slowly sideways
+    this.vel.x += (this.gravX + (Math.random() - 0.5) * 0.04) * 0.03 * dt;
 
     this.vel.x = clamp(this.vel.x, -0.5, 0.5);
-    this.vel.y = clamp(this.vel.y,  0.0, 0.6); // home only falls, never rises
 
     this.center.x += this.vel.x * dt;
-    this.center.y += this.vel.y * dt;
 
     if (this.center.x >  1.4) this.center.x = -1.4;
     if (this.center.x < -1.4) this.center.x =  1.4;
-    if (this.center.y >  1.1) this.respawn();
 
     this.pos.x = trajX + this.disp.x;
     this.pos.y = trajY + this.disp.y;
@@ -509,7 +487,6 @@ class Floater {
     this.center.y = -1.05 - Math.random() * 0.15; // just above visible top
     this.center.x = rand(-0.85, 0.85);
     this.vel.x    = (Math.random() - 0.5) * 0.04;
-    this.vel.y    = 0;
     this.disp.x   = this.disp.y   = 0;
     this.dispVel.x = this.dispVel.y = 0;
   }
@@ -685,10 +662,8 @@ function drawEyeMonitor() {
   const iy = clamp(gaze.y, -1, 1) * maxOffY;
 
   if (openHH > irisR * 0.6) {
-    // iris ring tints green when look-up lift is active — quiet feedback signal
-    const liftOn = gaze.y < -LOOK_UP_THRESHOLD;
     mctx.save();
-    mctx.strokeStyle = liftOn ? 'rgba(120, 230, 160, 0.72)' : 'rgba(255, 255, 255, 0.58)';
+    mctx.strokeStyle = 'rgba(255, 255, 255, 0.58)';
     mctx.lineWidth   = 1.2 * s;
     for (const cx of [leftX, rightX]) {
       mctx.beginPath();
