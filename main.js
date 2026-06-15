@@ -100,52 +100,61 @@ const bgImg = new Image();
 bgImg.src = 'background.jpg';
 
 // ── voices from the world ─────────────────────────────────────────────────────
-// Loaded from Reddit on startup — real people describing their own floaters.
-// Falls back to a small curated set if the fetch fails.
-const VOICE_FALLBACKS = [
-  "Mine have been with me my whole life. One long thread and a few dots.",
-  "I have a big one shaped like a worm. I've made peace with it.",
-  "After my vitreous detachment at 45 I got dozens. Like a snow globe.",
-  "Just one cobweb. I forget about it for months, then suddenly there it is.",
-  "Mine look like a transparent jellyfish. Fascinating and maddening.",
+// Seeded with first-person descriptions from eye floater communities.
+// At startup, loadVoicesFromSheet() prepends live form submissions so the pool
+// grows as real people add theirs. Fallbacks stay at the end so there's always
+// something to show even without network.
+const BLINK_VOICES = [
+  "Mine looks exactly like a transparent hair floating in front of my right eye. I keep trying to brush it away before I remember.",
+  "I have a big one that looks like a worm. It's been with me since I was about twelve.",
+  "After my posterior vitreous detachment at 52, I got hundreds of tiny dots. Like someone shook a snow globe in my eye.",
+  "I see a perfect ring shape in my right eye. My ophthalmologist called it a Weiss ring. I find it oddly beautiful.",
+  "Mine look like transparent squiggly lines, almost like bacteria under a microscope.",
+  "I have one that pulses when I move my eye quickly. Like a tiny jellyfish.",
+  "Just one long thread in my left eye. It's been there so long I think I'd miss it.",
+  "After my retinal tear surgery I got dozens of new ones. They look like slow ash falling.",
+  "Mine are a cluster of small bubbles. I used to stare at the sky as a kid just to watch them drift.",
+  "A shadow shaped like a spider web in the corner of my vision. Appeared at 35, out of nowhere.",
+  "Tiny black dots, maybe twenty of them. They move together. I've started calling them the colony.",
+  "Mine looks like a transparent C. Very precise shape. I've had it since high school and it hasn't changed at all.",
+  "Something like a dandelion seed, light and wispy. Most visible against a white wall.",
+  "A tangle of fishing line. It's worst against a bright sky or a white screen.",
+  "I got mine after staring at the sun too long as a teenager. I think of it as a scar I can see.",
+  "One long thread and a small ring. Together. Twenty years now.",
+  "They look like oil on water. They catch the light differently at certain times of day.",
+  "A large cloudy floater appeared overnight. My doctor said it was normal aging. I was 38.",
+  "They look like tiny translucent tadpoles. I've watched them swim across the same patch of sky for thirty years.",
+  "I've had a C-shaped one since birth, my mother says. I've never known vision without it.",
 ];
-let blinkVoices = [...VOICE_FALLBACKS];
 let blinkVoiceIndex = 0;
 let blinkVoiceTimer = null;
 
-async function loadVoices() {
-  // Reddit blocks direct browser fetch (CORS). Route through a free proxy.
-  const proxy = 'https://corsproxy.io/?';
-  const urls = [
-    'https://www.reddit.com/r/eyefloaters/top.json?limit=100&t=all',
-    'https://www.reddit.com/search.json?q=eye+floaters&sort=top&t=all&limit=100&type=link',
-  ];
-  for (const url of urls) {
-    try {
-      const res = await fetch(proxy + encodeURIComponent(url));
-      if (!res.ok) continue;
-      const json = await res.json();
-      const posts = json.data?.children ?? [];
-      const voices = posts
-        .map(p => (p.data.selftext?.trim() || p.data.title?.trim()) ?? '')
-        .filter(t => t.length > 60 && t.length < 400
-                  && !/http/i.test(t)
-                  && /\bI\b|\bmine\b|\bmy\b/i.test(t))
-        .map(t => {
-          const s = t.split(/[.!?]/)[0].trim();
-          return s.length > 40 ? s + '.' : t.slice(0, 220).trim();
-        });
-      if (voices.length >= 4) {
-        for (let i = voices.length - 1; i > 0; i--) {
-          const j = Math.floor(Math.random() * (i + 1));
-          [voices[i], voices[j]] = [voices[j], voices[i]];
-        }
-        blinkVoices = voices;
-        return;
-      }
-    } catch (_) { /* try next url */ }
-  }
-  // both failed — fallbacks already set
+// Pull live submissions from the participatory Google Sheet.
+// Prepends valid responses to BLINK_VOICES so real descriptions show first.
+const SHEET_CSV = 'https://docs.google.com/spreadsheets/d/1rwpIkz9TRUfD6JmmsUml-LssfUU9EUaG7_4RpUutzHs/export?format=csv&gid=960665220';
+async function loadVoicesFromSheet() {
+  try {
+    const res = await fetch(SHEET_CSV);
+    if (!res.ok) return;
+    const text = await res.text();
+    const rows = text.trim().split('\n').slice(1); // skip header row
+    const voices = [];
+    for (const row of rows) {
+      const comma = row.indexOf(',');
+      if (comma === -1) continue;
+      let v = row.slice(comma + 1).trim();
+      if (v.startsWith('"') && v.endsWith('"')) v = v.slice(1, -1).replace(/""/g, '"');
+      v = v.trim();
+      if (v.length > 20 && v.length < 500 && !/http/i.test(v)) voices.push(v);
+    }
+    if (voices.length < 1) return;
+    // Fisher-Yates shuffle so the order is fresh each session
+    for (let i = voices.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [voices[i], voices[j]] = [voices[j], voices[i]];
+    }
+    BLINK_VOICES.unshift(...voices);
+  } catch (_) {}
 }
 
 // ── blink state ───────────────────────────────────────────────────────────────
@@ -829,12 +838,6 @@ function frame(now) {
       blinkCoverage = tt < 0.4
         ? Math.sin((tt / 0.4) * Math.PI * 0.5)
         : Math.cos(((tt - 0.4) / 0.6) * Math.PI * 0.5);
-      // at peak (tt≥0.5), apply queued scene — hidden under fully-closed lids
-      if (tt >= 0.5 && pendingScene >= 0) {
-        currentScene = pendingScene;
-        pendingScene = -1;
-        sceneFlashT  = 0; // flash starts as lids re-open, not at trigger
-      }
     }
   }
 
@@ -916,7 +919,6 @@ function frame(now) {
 }
 
 requestAnimationFrame(frame);
-loadVoices(); // fetch real voices from Reddit in background; falls back silently
 
 // ── entry / about / nav wiring ────────────────────────────────────────────────
 const entry         = document.getElementById('entry');
@@ -941,6 +943,9 @@ function revealNav() {
 }
 document.addEventListener('mousemove', revealNav);
 document.addEventListener('touchstart', revealNav, { passive: true });
+
+// fetch live voices early — doesn't need a user gesture
+loadVoicesFromSheet();
 
 let started = false;
 async function startExperience() {
