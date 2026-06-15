@@ -947,6 +947,42 @@ document.addEventListener('touchstart', revealNav, { passive: true });
 // fetch live voices early — doesn't need a user gesture
 loadVoicesFromSheet();
 
+// ── inline voice submission ───────────────────────────────────────────────────
+async function submitVoice(text) {
+  try {
+    await fetch(
+      'https://docs.google.com/forms/d/e/1FAIpQLSdsgI-TnrmwOllHhinmQrjSvhuR7Sj3H2hZ5DdkbzsiHxun_w/formResponse',
+      {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ 'entry.1730490316': text }),
+      }
+    );
+  } catch (_) {}
+}
+
+const voiceInput   = document.getElementById('voice-input');
+const voiceConfirm = document.getElementById('voice-confirm');
+if (voiceInput) {
+  voiceInput.addEventListener('keydown', async (e) => {
+    if (e.key !== 'Enter') return;
+    const text = voiceInput.value.trim();
+    if (!text || voiceInput.disabled) return;
+    voiceInput.value   = '';
+    voiceInput.disabled = true;
+    voiceConfirm.textContent = 'It\'s in the archive.';
+    voiceConfirm.classList.add('shown');
+    // surface it immediately in the live pool so the next blink can show it
+    BLINK_VOICES.unshift(text);
+    await submitVoice(text);
+    setTimeout(() => {
+      voiceInput.disabled = false;
+      voiceConfirm.classList.remove('shown');
+    }, 3000);
+  });
+}
+
 let started = false;
 async function startExperience() {
   entry.classList.add('gone');
