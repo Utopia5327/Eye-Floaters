@@ -114,31 +114,38 @@ let blinkVoiceIndex = 0;
 let blinkVoiceTimer = null;
 
 async function loadVoices() {
-  try {
-    const res = await fetch(
-      'https://www.reddit.com/r/eyefloaters/top.json?limit=100&t=all',
-      { headers: { Accept: 'application/json' } }
-    );
-    if (!res.ok) return;
-    const json = await res.json();
-    const posts = json.data?.children ?? [];
-    const voices = posts
-      .map(p => p.data.selftext?.trim())
-      .filter(t => t && t.length > 60 && t.length < 400
-               && !/http/i.test(t)
-               && /\bI\b|\bmine\b|\bmy\b/i.test(t))
-      .map(t => {
-        const sentence = t.split(/[.!?]/)[0].trim();
-        return (sentence.length > 40 ? sentence + '.' : t.slice(0, 220).trim());
-      });
-    if (voices.length >= 4) {
-      for (let i = voices.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [voices[i], voices[j]] = [voices[j], voices[i]];
+  // Reddit blocks direct browser fetch (CORS). Route through a free proxy.
+  const proxy = 'https://corsproxy.io/?';
+  const urls = [
+    'https://www.reddit.com/r/eyefloaters/top.json?limit=100&t=all',
+    'https://www.reddit.com/search.json?q=eye+floaters&sort=top&t=all&limit=100&type=link',
+  ];
+  for (const url of urls) {
+    try {
+      const res = await fetch(proxy + encodeURIComponent(url));
+      if (!res.ok) continue;
+      const json = await res.json();
+      const posts = json.data?.children ?? [];
+      const voices = posts
+        .map(p => (p.data.selftext?.trim() || p.data.title?.trim()) ?? '')
+        .filter(t => t.length > 60 && t.length < 400
+                  && !/http/i.test(t)
+                  && /\bI\b|\bmine\b|\bmy\b/i.test(t))
+        .map(t => {
+          const s = t.split(/[.!?]/)[0].trim();
+          return s.length > 40 ? s + '.' : t.slice(0, 220).trim();
+        });
+      if (voices.length >= 4) {
+        for (let i = voices.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [voices[i], voices[j]] = [voices[j], voices[i]];
+        }
+        blinkVoices = voices;
+        return;
       }
-      blinkVoices = voices;
-    }
-  } catch (_) { /* silently keep fallbacks */ }
+    } catch (_) { /* try next url */ }
+  }
+  // both failed — fallbacks already set
 }
 
 // ── blink state ───────────────────────────────────────────────────────────────
