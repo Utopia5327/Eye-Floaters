@@ -95,27 +95,51 @@ const lerpRGB = (a, b, t) => [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2
 const grainTex = makeGrain(256);
 let grainPattern = null;
 
-// ── sky scenes — one per blink-teleport ──────────────────────────────────────
-// Each scene maps to one of the 5 background photos. filter + tint grade the
-// photo at render time; sky/ground arrays are the procedural fallback if the
-// photo hasn't loaded yet.
-const SKY_SCENES = [
-  { label:'bg1', photo:'background.jpg',  sky:['#0a3d6b','#1a6fb5','#4aaade','#b8dff5'], ground:['#4a7c28','#2d5518'], horizonY:0.62 },
-  { label:'bg2', photo:'background2.jpg', sky:['#0d0520','#3a0d40','#d44020','#f08830'], ground:['#1a0c05','#0a0604'], horizonY:0.55 },
-  { label:'bg3', photo:'background3.jpg', sky:['#010308','#050e1f','#0a1a35','#0d2040'], ground:['#080606','#050303'], horizonY:0.65 },
-  { label:'bg4', photo:'background4.jpg', sky:['#1a1f1a','#2a3528','#4a5540','#606a55'], ground:['#1a1505','#0e0e0a'], horizonY:0.58 },
-];
-let currentScene  = 0;
-let pendingScene  = -1; // scene queued to swap at eyelid peak
-let sceneFlashT   = -1;
-const SCENE_FLASH_DURATION = 0.4;
+// ── background ────────────────────────────────────────────────────────────────
+const bgImg = new Image();
+bgImg.src = 'background.jpg';
 
-// ── background photos — one per scene, loaded in parallel ─────────────────────
-const bgImages = SKY_SCENES.map(scene => {
-  const img = new Image();
-  img.src = scene.photo;
-  return img;
-});
+// ── voices from the world ─────────────────────────────────────────────────────
+// Loaded from Reddit on startup — real people describing their own floaters.
+// Falls back to a small curated set if the fetch fails.
+const VOICE_FALLBACKS = [
+  "Mine have been with me my whole life. One long thread and a few dots.",
+  "I have a big one shaped like a worm. I've made peace with it.",
+  "After my vitreous detachment at 45 I got dozens. Like a snow globe.",
+  "Just one cobweb. I forget about it for months, then suddenly there it is.",
+  "Mine look like a transparent jellyfish. Fascinating and maddening.",
+];
+let blinkVoices = [...VOICE_FALLBACKS];
+let blinkVoiceIndex = 0;
+let blinkVoiceTimer = null;
+
+async function loadVoices() {
+  try {
+    const res = await fetch(
+      'https://www.reddit.com/r/eyefloaters/top.json?limit=100&t=all',
+      { headers: { Accept: 'application/json' } }
+    );
+    if (!res.ok) return;
+    const json = await res.json();
+    const posts = json.data?.children ?? [];
+    const voices = posts
+      .map(p => p.data.selftext?.trim())
+      .filter(t => t && t.length > 60 && t.length < 400
+               && !/http/i.test(t)
+               && /\bI\b|\bmine\b|\bmy\b/i.test(t))
+      .map(t => {
+        const sentence = t.split(/[.!?]/)[0].trim();
+        return (sentence.length > 40 ? sentence + '.' : t.slice(0, 220).trim());
+      });
+    if (voices.length >= 4) {
+      for (let i = voices.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [voices[i], voices[j]] = [voices[j], voices[i]];
+      }
+      blinkVoices = voices;
+    }
+  } catch (_) { /* silently keep fallbacks */ }
+}
 
 // ── blink state ───────────────────────────────────────────────────────────────
 // A blink redistributes the vitreous, so real floaters resettle on each blink.
@@ -134,21 +158,6 @@ const BLINK_FIRE_THRESHOLD    = 0.36;
 const BLINK_RELEASE_THRESHOLD = 0.16;
 const BLINK_DURATION          = 0.13;
 
-// rotating first-person voices — whose floaters are these?
-const BLINK_VOICES = [
-  "Mine looks like a coiled spring. I've had it since I was about seven.",
-  "Just one long thread. It follows me everywhere I look.",
-  "Three small dots, always in formation. I used to count them as a child.",
-  "Like looking through a smudged window that moves when I try to clean it.",
-  "Mine appeared after my retinal detachment. They look like smoke now.",
-  "A single cobweb, always just out of reach. I'm eighty-two. Still surprised by it.",
-  "Dozens of them. My doctor says that's normal. I stopped noticing years ago.",
-  "One ring, one thread. My ophthalmologist says they'll calcify eventually.",
-  "I see mine most clearly against open sky. Always have.",
-  "My grandmother called hers her little companions. I thought she was joking.",
-];
-let blinkVoiceIndex = 0;
-let blinkVoiceTimer = null;
 
 function triggerBlink() {
   blinkAnimT  = 0;
@@ -850,31 +859,17 @@ function frame(now) {
   // ── background ──
   ctx.globalCompositeOperation = 'source-over';
   ctx.globalAlpha = 1;
-  {
-    const scene = SKY_SCENES[currentScene];
-
-    const img = bgImages[currentScene];
-    if (img && img.complete && img.naturalWidth > 0) {
-      // Each photo is shown as-is — no colour grading, no tints.
-      // fit-to-cover with gaze pan so the world stays fixed as the eye moves.
-      const scale = Math.max(W / img.width, H / img.height) * 1.18;
-      const drawW = img.width  * scale;
-      const drawH = img.height * scale;
-      const panX  = clamp(bgGaze.x, -1, 1) * (drawW - W) * 0.14;
-      const panY  = clamp(bgGaze.y, -1, 1) * (drawH - H) * 0.14;
-      ctx.drawImage(img, (W - drawW) * 0.5 - panX, (H - drawH) * 0.5 - panY, drawW, drawH);
-    } else {
-      // Procedural fallback while photo loads
-      const hy = scene.horizonY * H;
-      const skyGrad = ctx.createLinearGradient(0, 0, 0, hy);
-      skyGrad.addColorStop(0, scene.sky[0]); skyGrad.addColorStop(0.45, scene.sky[1]);
-      skyGrad.addColorStop(0.78, scene.sky[2]); skyGrad.addColorStop(1, scene.sky[3] || scene.sky[2]);
-      ctx.fillStyle = skyGrad; ctx.fillRect(0, 0, W, hy + 2);
-      const gGrad = ctx.createLinearGradient(0, hy, 0, H);
-      gGrad.addColorStop(0, scene.ground[0]); gGrad.addColorStop(1, scene.ground[1]);
-      ctx.fillStyle = gGrad; ctx.fillRect(0, hy, W, H - hy);
-    }
-
+  if (bgImg.complete && bgImg.naturalWidth > 0) {
+    const scale = Math.max(W / bgImg.width, H / bgImg.height) * 1.18;
+    const drawW = bgImg.width  * scale;
+    const drawH = bgImg.height * scale;
+    const panX  = clamp(bgGaze.x, -1, 1) * (drawW - W) * 0.08;
+    const panY  = clamp(bgGaze.y, -1, 1) * (drawH - H) * 0.14;
+    ctx.drawImage(bgImg, (W - drawW) * 0.5 - panX, (H - drawH) * 0.5 - panY, drawW, drawH);
+  } else {
+    const grad = ctx.createLinearGradient(0, 0, 0, H);
+    grad.addColorStop(0, '#b8d8f0'); grad.addColorStop(1, '#e8f4fd');
+    ctx.fillStyle = grad; ctx.fillRect(0, 0, W, H);
   }
 
   // ── floaters ──
@@ -914,6 +909,7 @@ function frame(now) {
 }
 
 requestAnimationFrame(frame);
+loadVoices(); // fetch real voices from Reddit in background; falls back silently
 
 // ── entry / about / nav wiring ────────────────────────────────────────────────
 const entry         = document.getElementById('entry');
