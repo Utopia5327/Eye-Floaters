@@ -338,6 +338,7 @@
 
   /* ── inline voice submission ─────────────────────────────────────────────── */
   .voice-input-wrap { margin-top: 1.8rem; }
+  .entry-voice { max-width: 300px; margin-left: auto; margin-right: auto; }
   .voice-input-label {
     font-size: 11px;
     letter-spacing: 0.01em;
@@ -399,6 +400,14 @@
           <polyline points="33,1 40,6 33,11"/>
         </svg>
       </button>
+
+      <div class="voice-input-wrap entry-voice">
+        <p class="voice-input-label">What are yours?</p>
+        <input id="voice-input-entry" class="voice-input" type="text"
+               placeholder="A thread. A ring. A tangle."
+               maxlength="400" autocomplete="off" spellcheck="false">
+        <p id="voice-confirm-entry" class="voice-confirm" aria-live="polite"></p>
+      </div>
     </div>
     <div class="entry-foot">
       <button id="aboutEntryBtn" class="link t-meta" type="button">about</button>
@@ -410,7 +419,7 @@
     <div class="about-card">
       <p class="lead">You have always had them.</p>
 
-      <p class="t-body">Threads. Specks. A wisp of cobweb at the edge of vision. You've had them since childhood. You just stopped noticing.</p>
+      <p class="t-body">Threads. Specks. A wisp of cobweb at the edge of vision. You just stopped noticing.</p>
 
       <p class="t-body">One morning, I noticed mine again. I tried to look directly at one.</p>
 
@@ -418,7 +427,7 @@
 
       <hr class="rule">
 
-      <p class="t-body">Floaters are fragments of tissue suspended in the vitreous — the gel that fills your eye. They drift slowly, suspended in fluid, casting faint shadows on the retina.</p>
+      <p class="t-body">Floaters are fragments of tissue in the vitreous — the gel that fills your eye. They drift, casting faint shadows on the retina.</p>
 
       <p class="t-body">Try to fix your gaze on one and it evades you. Your eye moves toward it. The floater moves with it. The fovea never arrives.</p>
 

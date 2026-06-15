@@ -962,26 +962,28 @@ async function submitVoice(text) {
   } catch (_) {}
 }
 
-const voiceInput   = document.getElementById('voice-input');
-const voiceConfirm = document.getElementById('voice-confirm');
-if (voiceInput) {
-  voiceInput.addEventListener('keydown', async (e) => {
+function wireVoiceInput(inputId, confirmId) {
+  const input   = document.getElementById(inputId);
+  const confirm = document.getElementById(confirmId);
+  if (!input || !confirm) return;
+  input.addEventListener('keydown', async (e) => {
     if (e.key !== 'Enter') return;
-    const text = voiceInput.value.trim();
-    if (!text || voiceInput.disabled) return;
-    voiceInput.value   = '';
-    voiceInput.disabled = true;
-    voiceConfirm.textContent = 'It\'s in the archive.';
-    voiceConfirm.classList.add('shown');
-    // surface it immediately in the live pool so the next blink can show it
+    const text = input.value.trim();
+    if (!text || input.disabled) return;
+    input.value     = '';
+    input.disabled  = true;
+    confirm.textContent = "It's in the archive.";
+    confirm.classList.add('shown');
     BLINK_VOICES.unshift(text);
     await submitVoice(text);
     setTimeout(() => {
-      voiceInput.disabled = false;
-      voiceConfirm.classList.remove('shown');
+      input.disabled = false;
+      confirm.classList.remove('shown');
     }, 3000);
   });
 }
+wireVoiceInput('voice-input',       'voice-confirm');
+wireVoiceInput('voice-input-entry', 'voice-confirm-entry');
 
 let started = false;
 async function startExperience() {
