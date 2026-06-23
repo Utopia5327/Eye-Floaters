@@ -26,12 +26,19 @@ async function loadMediapipe() {
 const canvas = document.getElementById('scene');
 const ctx = canvas.getContext('2d');
 let W = 0, H = 0, DPR = 1;
+let frostCanvas, frostCtx;
 function resize() {
   DPR = Math.min(window.devicePixelRatio || 1, 2);
   W = canvas.width = Math.floor(window.innerWidth * DPR);
   H = canvas.height = Math.floor(window.innerHeight * DPR);
   canvas.style.width = window.innerWidth + 'px';
   canvas.style.height = window.innerHeight + 'px';
+  if (!frostCanvas) {
+    frostCanvas = document.createElement('canvas');
+    frostCtx    = frostCanvas.getContext('2d');
+  }
+  frostCanvas.width  = W;
+  frostCanvas.height = H;
 }
 window.addEventListener('resize', resize);
 resize();
@@ -95,9 +102,7 @@ const lerpRGB = (a, b, t) => [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2
 const grainTex = makeGrain(256);
 let grainPattern = null;
 
-// ── background ────────────────────────────────────────────────────────────────
-const bgImg = new Image();
-bgImg.src = 'background.jpg';
+// ── voices from the world ─────────────────────────────────────────────────────
 
 // ── voices from the world ─────────────────────────────────────────────────────
 // Seeded with first-person descriptions from eye floater communities.
@@ -588,6 +593,31 @@ class Floater {
 
     ctx.restore();
   }
+
+  // Punch a transparent clearing in the frost canvas so the text beneath shows through.
+  drawClearing(fCtx) {
+    const sx = (this.pos.x * 0.5 + 0.5) * W;
+    const sy = (this.pos.y * 0.5 + 0.5) * H;
+    if (sx < -300 || sx > W + 300 || sy < -300 || sy > H + 300) return;
+    const scale = (Math.min(W, H) / 900) * DPR;
+    fCtx.save();
+    fCtx.translate(sx, sy);
+    fCtx.scale(scale, scale);
+    fCtx.lineCap   = 'round';
+    fCtx.lineJoin  = 'round';
+    fCtx.lineWidth = this.lineW * 2.8;
+    const p = this.path;
+    fCtx.beginPath();
+    fCtx.moveTo(p[0].x, p[0].y);
+    for (let i = 1; i < p.length - 1; i++) {
+      const mx = (p[i].x + p[i + 1].x) * 0.5;
+      const my = (p[i].y + p[i + 1].y) * 0.5;
+      fCtx.quadraticCurveTo(p[i].x, p[i].y, mx, my);
+    }
+    fCtx.lineTo(p[p.length - 1].x, p[p.length - 1].y);
+    fCtx.stroke();
+    fCtx.restore();
+  }
 }
 
 // stratify floaters across the full depth range so we get strong parallax —
@@ -614,10 +644,6 @@ let rawGaze = { x: 0, y: 0 };
 let gaze = { x: 0, y: 0 };
 let gazePrev = { x: 0, y: 0 };
 let gazeVel = { x: 0, y: 0 };
-// separate heavily-smoothed gaze used ONLY for background panning —
-// decoupled from floater gaze so background stays stable while floaters
-// react quickly to eye movements.
-let bgGaze = { x: 0, y: 0 };
 let lastVideoTime = -1;
 
 const EYE = {
@@ -789,6 +815,56 @@ async function initTracking() {
   status.classList.remove('shown');
 }
 
+// ── text layer ────────────────────────────────────────────────────────────────
+// Renders the hidden message onto the dark canvas. The frost layer covers this;
+// floater clearings cut holes so fragments of text are glimpsed — never in full.
+function drawTextLayer() {
+  ctx.save();
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = '#06060a';
+  ctx.fillRect(0, 0, W, H);
+
+  const lines   = ['THIS IS WHAT', 'YOU KEEP', 'MISSING'];
+  const fs      = Math.min(W * 0.13, H * 0.19);
+  const lineH   = fs * 1.18;
+  const totalH  = lineH * (lines.length - 1);
+
+  ctx.textAlign    = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font         = `300 ${fs}px "Cormorant Garamond", Georgia, serif`;
+  ctx.letterSpacing = '0.08em';
+  ctx.fillStyle    = 'rgba(255, 255, 255, 0.88)';
+
+  lines.forEach((line, i) => {
+    ctx.fillText(line, W * 0.5, H * 0.5 - totalH * 0.5 + i * lineH);
+  });
+  ctx.restore();
+}
+
+// ── frost layer ───────────────────────────────────────────────────────────────
+// Semi-opaque white fog covering the canvas. Each floater punches a transparent
+// clearing in its shape, revealing the text beneath — but only peripherally.
+function drawFrost() {
+  frostCtx.clearRect(0, 0, W, H);
+
+  // fill with frost
+  frostCtx.globalCompositeOperation = 'source-over';
+  frostCtx.globalAlpha  = 1;
+  frostCtx.fillStyle    = 'rgba(255, 255, 255, 0.93)';
+  frostCtx.fillRect(0, 0, W, H);
+
+  // cut floater-shaped clearings
+  frostCtx.globalCompositeOperation = 'destination-out';
+  for (const f of floaters) f.drawClearing(frostCtx);
+
+  // composite frost over text
+  frostCtx.globalCompositeOperation = 'source-over';
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1;
+  ctx.drawImage(frostCanvas, 0, 0);
+}
+
 // ── main loop ─────────────────────────────────────────────────────────────────
 let last = performance.now();
 function frame(now) {
@@ -846,11 +922,6 @@ function frame(now) {
   gaze.x += (rawGaze.x - gaze.x) * a;
   gaze.y += (rawGaze.y - gaze.y) * a;
 
-  // background gaze tracks much more slowly (alpha=0.07 ≈ 15-frame lag),
-  // so the photo pan is a gentle drift rather than jittery tracking.
-  bgGaze.x += (rawGaze.x - bgGaze.x) * 0.07;
-  bgGaze.y += (rawGaze.y - bgGaze.y) * 0.07;
-
   gazeVel.x = (gaze.x - gazePrev.x) / Math.max(dt, 0.001);
   gazeVel.y = (gaze.y - gazePrev.y) / Math.max(dt, 0.001);
   gazePrev.x = gaze.x;
@@ -866,29 +937,10 @@ function frame(now) {
     saccadeFired = false;
   }
 
-  // ── background ──
-  ctx.globalCompositeOperation = 'source-over';
-  ctx.globalAlpha = 1;
-  if (bgImg.complete && bgImg.naturalWidth > 0) {
-    const scale = Math.max(W / bgImg.width, H / bgImg.height) * 1.18;
-    const drawW = bgImg.width  * scale;
-    const drawH = bgImg.height * scale;
-    const panX  = clamp(bgGaze.x, -1, 1) * (drawW - W) * 0.08;
-    const panY  = clamp(bgGaze.y, -1, 1) * (drawH - H) * 0.14;
-    ctx.drawImage(bgImg, (W - drawW) * 0.5 - panX, (H - drawH) * 0.5 - panY, drawW, drawH);
-  } else {
-    const grad = ctx.createLinearGradient(0, 0, 0, H);
-    grad.addColorStop(0, '#b8d8f0'); grad.addColorStop(1, '#e8f4fd');
-    ctx.fillStyle = grad; ctx.fillRect(0, 0, W, H);
-  }
-
-  // ── floaters ──
-  ctx.globalCompositeOperation = 'source-over';
-  ctx.globalAlpha = 1;
-  for (const f of floaters) {
-    f.step(dt, gaze, gazeVel);
-    f.draw(ctx, 1);
-  }
+  // ── text + frost ──
+  drawTextLayer();
+  for (const f of floaters) f.step(dt, gaze, gazeVel);
+  drawFrost();
 
   // ── film grain: per-frame breath, very low opacity ──
   if (!grainPattern) grainPattern = ctx.createPattern(grainTex, 'repeat');
