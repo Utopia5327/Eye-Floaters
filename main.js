@@ -605,7 +605,7 @@ class Floater {
     fCtx.scale(scale, scale);
     fCtx.lineCap   = 'round';
     fCtx.lineJoin  = 'round';
-    fCtx.lineWidth = this.lineW * 2.8;
+    fCtx.lineWidth = this.lineW * 0.7;
     const p = this.path;
     fCtx.beginPath();
     fCtx.moveTo(p[0].x, p[0].y);
@@ -822,7 +822,9 @@ function drawTextLayer() {
   ctx.save();
   ctx.globalCompositeOperation = 'source-over';
   ctx.globalAlpha = 1;
-  ctx.fillStyle = '#06060a';
+  // warm paper behind the frost — clearings over empty space are invisible
+  // (paper ≈ white frost), clearings over a letterform reveal dark ink = contrast
+  ctx.fillStyle = '#ede8df';
   ctx.fillRect(0, 0, W, H);
 
   const lines   = ['THIS IS WHAT', 'YOU KEEP', 'MISSING'];
@@ -834,7 +836,7 @@ function drawTextLayer() {
   ctx.textBaseline = 'middle';
   ctx.font         = `300 ${fs}px "Cormorant Garamond", Georgia, serif`;
   ctx.letterSpacing = '0.08em';
-  ctx.fillStyle    = 'rgba(255, 255, 255, 0.88)';
+  ctx.fillStyle    = 'rgba(22, 14, 6, 0.90)';
 
   lines.forEach((line, i) => {
     ctx.fillText(line, W * 0.5, H * 0.5 - totalH * 0.5 + i * lineH);
@@ -851,7 +853,7 @@ function drawFrost() {
   // fill with frost
   frostCtx.globalCompositeOperation = 'source-over';
   frostCtx.globalAlpha  = 1;
-  frostCtx.fillStyle    = 'rgba(255, 255, 255, 0.93)';
+  frostCtx.fillStyle    = 'rgba(255, 255, 255, 0.97)';
   frostCtx.fillRect(0, 0, W, H);
 
   // cut floater-shaped clearings
