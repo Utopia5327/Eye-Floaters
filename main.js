@@ -594,28 +594,25 @@ class Floater {
     ctx.restore();
   }
 
-  // Punch a transparent clearing in the frost canvas so the text beneath shows through.
+  // Wipe a soft elliptical clearing in the frost — like a hand smear on steamed glass.
+  // Uses blurred fill so edges fade gradually: clear center, frosted rim.
   drawClearing(fCtx) {
     const sx = (this.pos.x * 0.5 + 0.5) * W;
     const sy = (this.pos.y * 0.5 + 0.5) * H;
-    if (sx < -300 || sx > W + 300 || sy < -300 || sy > H + 300) return;
-    const scale = (Math.min(W, H) / 900) * DPR;
+    if (sx < -W * 0.4 || sx > W * 1.4 || sy < -H * 0.4 || sy > H * 1.4) return;
+
+    // size scales with depth: near floaters leave larger smears
+    const base = Math.min(W, H) * (0.028 + this.depth * 0.055);
+    const rx   = base * (1.5 + Math.sin(this.phase.x) * 0.3);  // wide oval
+    const ry   = base * (0.52 + Math.cos(this.phase.y) * 0.15); // flat
+    const rot  = this.phase.x * 0.45;                            // slight tilt
+    const blur = (base * 0.48).toFixed(1);
+
     fCtx.save();
-    fCtx.translate(sx, sy);
-    fCtx.scale(scale, scale);
-    fCtx.lineCap   = 'round';
-    fCtx.lineJoin  = 'round';
-    fCtx.lineWidth = this.lineW * 0.7;
-    const p = this.path;
+    fCtx.filter = `blur(${blur}px)`;
     fCtx.beginPath();
-    fCtx.moveTo(p[0].x, p[0].y);
-    for (let i = 1; i < p.length - 1; i++) {
-      const mx = (p[i].x + p[i + 1].x) * 0.5;
-      const my = (p[i].y + p[i + 1].y) * 0.5;
-      fCtx.quadraticCurveTo(p[i].x, p[i].y, mx, my);
-    }
-    fCtx.lineTo(p[p.length - 1].x, p[p.length - 1].y);
-    fCtx.stroke();
+    fCtx.ellipse(sx, sy, rx, ry, rot, 0, Math.PI * 2);
+    fCtx.fill();
     fCtx.restore();
   }
 }
@@ -853,7 +850,7 @@ function drawFrost() {
   // fill with frost
   frostCtx.globalCompositeOperation = 'source-over';
   frostCtx.globalAlpha  = 1;
-  frostCtx.fillStyle    = 'rgba(255, 255, 255, 0.97)';
+  frostCtx.fillStyle = '#ffffff';
   frostCtx.fillRect(0, 0, W, H);
 
   // cut floater-shaped clearings
